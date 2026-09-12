@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.quarkiverse.networkfaults</groupId>
+        <artifactId>quarkus-network-faults-fault-tolerance-parent</artifactId>
+        <version>999-SNAPSHOT</version>
+    </parent>
+    <artifactId>quarkus-network-faults-fault-tolerance</artifactId>
+    <name>Quarkus Network Faults - Fault Tolerance - Runtime</name>
+    <description>Resets SmallRye Fault Tolerance circuit breakers when a network fault ends; included automatically next to quarkus-network-faults when quarkus-smallrye-fault-tolerance is present</description>
+
+    <properties>
+        <!-- the Quarkus extension whose presence brings this module into a build -->
+        <network-faults.requires>io.quarkus:quarkus-smallrye-fault-tolerance</network-faults.requires>
+        <automatic.module.name>io.quarkiverse.networkfaults.faulttolerance</automatic.module.name>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkiverse.networkfaults</groupId>
+            <artifactId>quarkus-network-faults-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.smallrye</groupId>
+            <artifactId>smallrye-fault-tolerance-api</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-extension-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

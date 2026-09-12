@@ -1,0 +1,231 @@
+= Testing Quarkus LangChain4j Models
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A call to a model is an outbound HTTP request to a provider, and it fails like any other: the provider is down, it hangs, it cuts the response, or it answers `429`.
+With a paid model, how the application reacts also decides what a failure costs.
+
+This guide shows how to:
+
+* Address a model, or the AI service that uses it
+* Apply faults to a model provider
+* Count the prompts that were really sent
+* Cut or stall a streamed response
+
+The snippets are taken from the `integration-tests/langchain4j` module, some shortened.
+The module runs every scenario against OpenAI, Ollama and Anthropic, each behind an AI service with `@Timeout`, `@CircuitBreaker` and `@Fallback` on the call, talking to small stubs of the chat APIs of the providers.
+
+== Prerequisites
+
+The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
+
+The support for Quarkus LangChain4j is added to the build automatically when `quarkus-langchain4j-core` is present.
+
+== Addressing a Model
+
+Model calls go to `quarkus.langchain4j.<provider>[.<name>].base-url`, and those properties are recognised as targets.
+A model is addressed by its bean, or by an AI service that uses it:
+
+[source,java]
+----
+@RegisterAiService(modelName = "m-openai")
+public interface OpenAiSummarizer {
+
+    @UserMessage("Summarize in one sentence: {text}")
+    String summarize(String text);
+}
+----
+
+[cols="2,3",options="header"]
+|===
+|Target |What it is
+
+|`faults.target(ChatModel.class)`
+|The default chat model
+
+|`faults.target(ChatModel.class, ModelName.Literal.of("m-openai"))`
+|A named chat model
+
+|`faults.target(OpenAiSummarizer.class)`
+|The chat model behind an AI service
+
+|`faults.target(StreamingChatModel.class, ModelName.Literal.of("m-openai"))`
+|The same target as the chat model of that name
+|===
+
+Embedding, image, moderation, scoring and audio transcription models are addressed the same way, by their bean type and `@ModelName`.
+
+== The Provider Is Down
+
+[source,java]
+----
+try (ActiveFault f = faults.target(ChatModel.class).unavailable()) {
+    when()
+            .get("/summarize/default?text=long+text")
+            .then()
+            .statusCode(503)
+            .body(is("model unavailable"));
+}
+----
+
+`unavailable()` takes the fallback fast, and the circuit breaker is reset when the fault ends.
+
+== The Provider Hangs
+
+[source,java]
+----
+Target model = faults.target(ChatModel.class, ModelName.Literal.of("m-openai"));
+try (ActiveFault f = model.hangs()) {
+    long ms = timed(() -> when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503));
+    assertTrue(ms >= 1_900,
+            "@Timeout alone cannot cut a blocking model call, took " + ms + "ms");
+    assertTrue(ms < 9_000,
+            "the client timeout must bound the hang, took " + ms + "ms");
+}
+----
+
+[IMPORTANT]
+.`@Timeout` cannot cut a hung model call
+====
+SmallRye Fault Tolerance interrupts the thread after one second, but the blocking model client keeps waiting, so the caller only gets the fallback when `quarkus.langchain4j.timeout` expires, once per attempt.
+That client timeout is the real bound: without it a hung model holds the request as long as the model hangs.
+
+Use the async AI service forms, or set the client timeout, rather than relying on `@Timeout` alone.
+====
+
+== The Response Is Cut
+
+[source,java]
+----
+Target model = faults.target(ChatModel.class, ModelName.Literal.of("m-openai"));
+long requestsBefore = model.traffic().httpRequestsSeen();
+try (ActiveFault f = model.diesMidRequest(afterBytes(40))) {
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503);
+}
+// one attempt plus the retry of the client
+assertEquals(2, model.traffic().httpRequestsSeen() - requestsBefore);
+----
+
+CAUTION: A cut response costs two prompts. The client of every provider retries once on an I/O error, and a paid model bills both. Only the OpenAI provider exposes `max-retries` to change it.
+
+== The Provider Rate Limits
+
+`http().respondsWith(429)` answers the model call with that status:
+
+[source,java]
+----
+Target model = faults.target(ChatModel.class, ModelName.Literal.of("m-openai"));
+long requestsBefore = model.traffic().httpRequestsSeen();
+try (ActiveFault f = model.http().respondsWith(429)
+        .contentType("application/json")
+        .body("{\"error\":{\"message\":\"rate limited\"}}")) {
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503)
+            .body(is("model unavailable"));
+}
+// a 429 is retried like an I/O error
+assertEquals(2, model.traffic().httpRequestsSeen() - requestsBefore);
+----
+
+The status reaches the application as the `RateLimitException` of LangChain4j, and only after the client has retried, so a rate-limited prompt is sent twice too.
+
+With `http().forFirst(1)` the retry succeeds and the caller never sees the `429`:
+
+[source,java]
+----
+try (ActiveFault f = model.http().forFirst(1).http().respondsWith(429)) {
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(200)
+            .body(is("summary from openai"));
+}
+----
+
+NOTE: Like every HTTP-aware fault, this needs a plaintext `http://` base URL. Applying it to a model configured with an `https://` base URL throws `UnsupportedOperationException`.
+
+== Counting Prompts
+
+One prompt is one `traffic().httpRequestsSeen()`, so the cost of a failure mode is something a test can assert.
+An open circuit breaker, for one, sends nothing:
+
+[source,java]
+----
+Target model = faults.target(ChatModel.class, ModelName.Literal.of("m-openai"));
+try (ActiveFault f = model.diesMidRequest(onNextWrite())) {
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503);
+
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503);
+
+    long before = model.traffic().httpRequestsSeen();
+    // breaker open: no prompt sent
+    when()
+            .get("/summarize/openai?text=long+text")
+            .then()
+            .statusCode(503);
+    assertEquals(before, model.traffic().httpRequestsSeen());
+}
+----
+
+== Streamed Responses
+
+The streaming form of an AI service, one returning `Multi<String>`, is tested with the moments that read a Server-Sent Events stream.
+`StreamingScenariosTest` runs against the OpenAI stub, which answers a streaming request with one event per token:
+
+[source,java]
+----
+Target model = faults.target(OpenAiStreamingSummarizer.class);
+try (ActiveFault f = model.diesMidRequest(afterSseEvents(1))) { // <1>
+    when()
+            .get("/summarize/stream/openai?text=long+text")
+            .then()
+            .statusCode(502)
+            .body(containsString(" after [summary]"));
+}
+
+try (ActiveFault f = model.hangs(afterSseEvents(1))) { // <2>
+    when()
+            .get("/summarize/stream/openai?text=long+text")
+            .then()
+            .statusCode(502)
+            .body(containsString(" after [summary]"));
+}
+----
+
+<1> The stream is cut after the first token. A stream cut after tokens were emitted is not retried.
+<2> The stream stalls after the first token.
+
+IMPORTANT: `quarkus.langchain4j.timeout` is the read timeout of the REST Client, which does not bound a stalled stream. A model that stops producing tokens is ended only by an idle timeout the consumer of the token stream puts on it. See xref:guide-streamed-responses.adoc[Testing streamed responses].
+
+== Summary
+
+What the tests established, identically for all three providers:
+
+* Calls go through the proxy and are counted
+* `unavailable()` takes the fallback fast, and the breaker is reset when the fault ends
+* A cut response and a `429` each cost two prompts, because every client retries once
+* An open breaker sends nothing
+* `@Timeout` cannot cut a hung model call; `quarkus.langchain4j.timeout` is the real bound
+
+== Going Further
+
+[.lead]
+* xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]
+* xref:guide-streamed-responses.adoc[Testing streamed responses]
+* xref:traffic.adoc[Counting Calls]
+* xref:faults.adoc[Faults Reference]

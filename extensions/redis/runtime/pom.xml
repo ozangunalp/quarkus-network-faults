@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.quarkiverse.networkfaults</groupId>
+        <artifactId>quarkus-network-faults-redis-parent</artifactId>
+        <version>999-SNAPSHOT</version>
+    </parent>
+    <artifactId>quarkus-network-faults-redis</artifactId>
+    <name>Quarkus Network Faults - Redis - Runtime</name>
+    <description>Network fault targets for the Redis client; included automatically next to quarkus-network-faults when quarkus-redis-client is present</description>
+
+    <properties>
+        <!-- the Quarkus extension whose presence brings this module into a build -->
+        <network-faults.requires>io.quarkus:quarkus-redis-client</network-faults.requires>
+        <automatic.module.name>io.quarkiverse.networkfaults.redis</automatic.module.name>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkiverse.networkfaults</groupId>
+            <artifactId>quarkus-network-faults-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-redis-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-extension-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

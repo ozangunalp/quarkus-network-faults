@@ -1,0 +1,226 @@
+= Getting Started with Quarkus Network Faults
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+This guide shows you how to get started with Quarkus Network Faults by testing what an endpoint does when the REST service it depends on is down, and when it hangs.
+
+The Java snippets are taken from the `integration-tests/rest-client-and-datasource` module of the extension, some shortened.
+
+[#install-extension]
+== Install the Extension
+
+Add the extension and its JUnit support to the test dependencies of your application:
+
+[source,xml,subs=attributes+]
+----
+<dependency>
+    <groupId>io.quarkiverse.networkfaults</groupId>
+    <artifactId>quarkus-network-faults</artifactId>
+    <version>{project-version}</version>
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>io.quarkiverse.networkfaults</groupId>
+    <artifactId>quarkus-network-faults-junit</artifactId>
+    <version>{project-version}</version>
+    <scope>test</scope>
+</dependency>
+----
+
+Nothing else is needed.
+The support for each technology, such as the REST Client or Agroal, is added to the build automatically when the matching Quarkus extension is present.
+
+NOTE: Nothing in the extension is active in a production build.
+
+[#application]
+== The Application under Test
+
+The application takes orders, and reserves each item with an inventory service it calls through a REST Client:
+
+[source,java]
+----
+@RegisterRestClient(configKey = "inventory")
+@Path("/inventory")
+public interface InventoryClient {
+
+    @POST
+    @Path("/reserve")
+    String reserve(String item);
+}
+----
+
+The call is guarded with SmallRye Fault Tolerance:
+
+[source,java]
+----
+@ApplicationScoped
+public class InventoryService {
+
+    private final InventoryClient client;
+    private final FailureLog failures;
+
+    public InventoryService(@RestClient InventoryClient client,
+            FailureLog failures) {
+        this.client = client;
+        this.failures = failures;
+    }
+
+    @Timeout(1000) // <1>
+    @CircuitBreaker(requestVolumeThreshold = 2, // <2>
+            failureRatio = 1.0, delay = 60_000)
+    @Fallback(fallbackMethod = "unavailable") // <3>
+    public String reserve(String item) {
+        return client.reserve(item);
+    }
+
+    String unavailable(String item, Throwable cause) {
+        failures.record(cause);
+        return null;
+    }
+}
+----
+
+<1> The call may take one second.
+<2> Two failures in a row open the circuit breaker for a minute.
+<3> Without a reservation the endpoint answers `503 inventory unavailable`.
+
+The address of the inventory service is ordinary configuration:
+
+[source,properties]
+----
+%test.quarkus.rest-client.inventory.url=${inventory.url}
+quarkus.rest-client.inventory.connect-timeout=1000
+quarkus.rest-client.inventory.read-timeout=2000
+----
+
+That property is what the extension looks for.
+It rewrites the value to the address of a proxy inside the test JVM, which relays to the real service until a test says otherwise.
+The value is taken after profiles and expressions are resolved, so a profile-specific property or one that expands a value a test resource set, as this one does, is rewritten like a literal URL.
+
+[#enable]
+== Enable Fault Injection in a Test
+
+Give the test class the `NetworkFaultsProfile` test profile and inject `NetworkFaults`:
+
+[source,java]
+----
+@QuarkusTest
+@TestProfile(NetworkFaultsProfile.class) // <1>
+class OrderResourceTest {
+
+    @Inject
+    NetworkFaults faults; // <2>
+}
+----
+
+<1> Routes every recognised outbound connection of the application through a proxy, for the test classes that share the profile.
+<2> The entry point for applying faults.
+
+Enabling is build-time configuration, and a test profile is what carries configuration into the build.
+The test classes that share the profile get one application built with the proxies in place; test classes without it are never proxied.
+
+[TIP]
+.The test class already has a profile?
+====
+Have that profile extend `NetworkFaultsProfile`, or copy `quarkus.network-faults.enabled=true` into its configuration overrides.
+====
+
+[#first-fault]
+== Apply a Fault
+
+A dependency is addressed by the bean the application uses to reach it, here the REST Client interface:
+
+[source,java]
+----
+@Test
+public void inventoryUnavailable() {
+    try (ActiveFault f = faults.target(InventoryClient.class) // <1>
+            .unavailable()) { // <2>
+        when()
+                .post("/orders?item=a")
+                .then()
+                .statusCode(503)
+                .body(is("inventory unavailable")); // <3>
+    }
+
+    when()
+            .post("/orders?item=a")
+            .then()
+            .statusCode(201); // <4>
+}
+----
+
+<1> `target(InventoryClient.class)` is the inventory service, whatever its address.
+<2> `unavailable()` refuses its connections until the returned `ActiveFault` is closed.
+<3> The `@Fallback` answered.
+<4> The fault has ended and the service is reachable again.
+
+When a fault ends, and after every test, the extension undoes what the fault left behind: it resets the SmallRye Fault Tolerance circuit breakers and flushes the Agroal pools.
+A failure counted by the circuit breaker during one test therefore never leaks into the next.
+
+[#timeout]
+== Check a Timeout
+
+A dependency that is down fails fast.
+One that accepts the connection and then says nothing is the more expensive failure, and `hangs()` produces it:
+
+[source,java]
+----
+@Test
+public void inventoryHangs() {
+    try (ActiveFault f = faults.target(InventoryClient.class).hangs()) {
+        long ms = timed(() -> when()
+                .post("/orders?item=c")
+                .then()
+                .statusCode(503));
+        assertTrue(ms >= 900 && ms < 1_900, // <1>
+                "expected the 1s @Timeout to fire, took " + ms + "ms");
+    }
+
+    when()
+            .post("/orders?item=c")
+            .then()
+            .statusCode(201);
+}
+----
+
+<1> The request is bounded by the `@Timeout`, not by the read timeout of the client.
+
+IMPORTANT: Without the `@Timeout`, the request would wait for the read timeout of the REST Client, which is 30 seconds by default. See xref:timeouts.adoc[Client Timeout Defaults].
+
+[#run]
+== Run the Tests
+
+Run the tests as usual:
+
+[source,shell]
+----
+./mvnw test
+----
+
+There is nothing to start first.
+The proxies live inside the test JVM, and Dev Services work unchanged, since their coordinates are configuration too.
+
+[NOTE]
+.A fault that tests nothing fails the test
+====
+If a fault was active and no connection went through its proxy, the test fails with a message that names the target and the configuration property behind it.
+See xref:guard.adoc[The Guard].
+====
+
+[#configuration]
+== Configuration Reference
+
+The extension has a single configuration property, the one `NetworkFaultsProfile` sets for the test classes that use it:
+
+include::includes/quarkus-network-faults.adoc[leveloffset=+1, opts=optional]
+
+== Going Further
+
+[.lead]
+* xref:guide-rest-client.adoc[Testing a failing REST dependency]
+* xref:guide-database.adoc[Testing a failing database]
+* xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]
+* xref:faults.adoc[Faults Reference]
+* xref:targets.adoc[Targets Reference]

@@ -1,0 +1,124 @@
+= Testing a Failing Database
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A database that fails in the middle of a request is where data gets lost or duplicated, and a database that hangs is where requests pile up.
+Both are hard to produce on demand without a proxy in front of the database.
+
+This guide shows how to test a request when:
+
+* The database dies mid-transaction
+* The database hangs
+* Pooled connections were killed
+
+Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
+
+== Prerequisites
+
+The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
+
+The samples address the default JDBC datasource, `faults.target(DataSource.class)`.
+A named datasource takes its qualifier, a reactive pool is `faults.target(Pool.class)`, and an `EntityManager` or a repository resolves to the datasource behind it; see xref:targets.adoc[Targets].
+
+TIP: Dev Services work unchanged. The address of the database they start is configuration too, so it is proxied like any other.
+
+== The Database Dies Mid-Transaction
+
+`diesMidRequest()` resets the connection as soon as the database starts to answer:
+
+[source,java]
+----
+@Test
+public void databaseDiesMidRequestRollsBack() {
+    when()
+            .post("/orders?item=warm")
+            .then()
+            .statusCode(201);
+
+    long before = count();
+    try (ActiveFault f = faults.target(DataSource.class).diesMidRequest()) {
+        when()
+                .post("/orders?item=f")
+                .then()
+                .statusCode(500);
+    }
+    assertEquals(before, count(), "the insert must not have been committed");
+
+    when()
+            .post("/orders?item=f")
+            .then()
+            .statusCode(201);
+}
+----
+
+What this exercises: whether a half-done request leaves data behind.
+The default kills the connection as soon as the database starts to answer, so the statement was sent but its result never arrived, which is the case people get wrong.
+
+== The Database Hangs
+
+`hangs()` keeps the connection open and relays nothing:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(DataSource.class).hangs()) {
+    long ms = timed(() -> when()
+            .get("/orders/count")
+            .then()
+            .statusCode(500));
+    assertTrue(ms < 6_500,
+            "socketTimeout=2 should bound the failure, took " + ms + "ms");
+}
+----
+
+What this exercises: the socket timeout of the JDBC driver.
+
+[IMPORTANT]
+.PostgreSQL has no socket timeout by default
+====
+The PostgreSQL driver defaults to no socket timeout, so a hung database hangs the request for ever.
+The sample sets one:
+
+[source,properties]
+----
+quarkus.datasource.jdbc.additional-jdbc-properties.socketTimeout=2
+----
+====
+
+Expect two bounded waits, not one: Agroal validates the pooled connection (one timeout), then opens a replacement whose handshake hangs (another).
+
+NOTE: The Agroal acquisition timeout defaults to 5 seconds and only bounds waiting for a pooled connection, not a hung query.
+
+== Pooled Connections Were Killed
+
+`dropConnections()` resets every live connection once, which is what a database restart looks like to the pool:
+
+[source,java]
+----
+faults.target(DataSource.class).dropConnections();
+
+// the pool notices and replaces the dead connection
+when()
+        .get("/orders/count")
+        .then()
+        .statusCode(200);
+----
+
+What this exercises: connection validation.
+
+[IMPORTANT]
+.Agroal does not validate on borrow by default
+====
+Agroal only validates idle connections when `quarkus.datasource.jdbc.foreground-validation-interval` is set.
+Without it, the first request after a database restart gets a dead connection and fails; the sample sets it to `PT0.001S`, which is why the snippet above answers `200` at once.
+====
+
+The reactive pool behaves differently: it is always reading its sockets, so it evicts dead connections immediately.
+
+== Going Further
+
+[.lead]
+* xref:targets.adoc[Targets Reference], for named datasources, reactive pools, Hibernate and Quarkus Data
+* xref:faults.adoc[Faults Reference]
+* xref:timeouts.adoc[Client Timeout Defaults]
+* xref:guard.adoc[The Guard]

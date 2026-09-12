@@ -1,0 +1,10 @@
+name: Network Faults - Agroal
+description: Network fault targets for Agroal, included automatically when both quarkus-network-faults and the Agroal extension are present
+metadata:
+  keywords:
+    - testing
+    - fault-injection
+  categories:
+    - "miscellaneous"
+  status: "experimental"
+  unlisted: true

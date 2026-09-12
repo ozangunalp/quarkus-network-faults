@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.quarkiverse.networkfaults</groupId>
+        <artifactId>quarkus-network-faults-hibernate-orm-parent</artifactId>
+        <version>999-SNAPSHOT</version>
+    </parent>
+    <artifactId>quarkus-network-faults-hibernate-orm-deployment</artifactId>
+    <name>Quarkus Network Faults - Hibernate ORM - Deployment</name>
+
+    <properties>
+        <automatic.module.name>io.quarkiverse.networkfaults.hibernateorm.deployment</automatic.module.name>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkiverse.networkfaults</groupId>
+            <artifactId>quarkus-network-faults-deployment-spi</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkiverse.networkfaults</groupId>
+            <artifactId>quarkus-network-faults-hibernate-orm</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-hibernate-orm-deployment</artifactId>
+            <!-- as Hibernate Reactive does: a reactive-only application must not gain Agroal through this module -->
+            <exclusions>
+                <exclusion>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>quarkus-agroal-deployment</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>quarkus-narayana-jta-deployment</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+    </dependencies>
+
+</project>

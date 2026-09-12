@@ -1,0 +1,24 @@
+package io.quarkiverse.networkfaults.runtime.internal;
+
+import java.util.List;
+
+/**
+ * Immutable view of one proxy's state.
+ */
+public record TargetSnapshot(
+        String name,
+        String upstreamHost,
+        int upstreamPort,
+        int proxyPort,
+        String sourceProperty,
+        boolean listening,
+        String fault,
+        String previousFault,
+        long connectionsSeen,
+        long httpRequestsSeen,
+        long connectionsReset,
+        long upstreamConnectFailures,
+        long bytesUpstream,
+        long bytesDownstream,
+        List<ConnectionSnapshot> connections) {
+}

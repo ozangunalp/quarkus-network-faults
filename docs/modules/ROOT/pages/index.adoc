@@ -1,0 +1,121 @@
+[.landing]
+= Quarkus Network Faults
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+[.lead]
+**Verify what your application does when a dependency is down, unreachable, slow, hung, or dies mid-call, from an ordinary `@QuarkusTest`.**
+
+The Quarkus Network Faults extension places an in-process proxy in front of every outbound connection the configuration of your application describes, and lets your tests apply faults to it.
+No Docker and no external tooling are involved: the proxy is a Vert.x server inside the test JVM, and a test addresses a dependency by the bean the application injects to reach it.
+
+image::fig-1-request.svg[alt="Where the proxy sits: the configured URL is rewritten by the interceptor to a loopback port, the REST Client connects to the ProxyTarget in the same JVM, the proxy relays to the real service, and the test applies faults to the target",width=700,align="center"]
+
+[source,java]
+----
+@QuarkusTest
+@TestProfile(NetworkFaultsProfile.class)
+class OrderResourceTest {
+
+    @Inject
+    NetworkFaults faults;
+
+    @Test
+    void inventoryServiceHangs() {
+        try (var ignored = faults.target(InventoryClient.class).hangs()) {
+            // the @Timeout fallback
+            when()
+                    .post("/orders")
+                    .then()
+                    .statusCode(503);
+        }
+
+        // recovered, breaker reset
+        when()
+                .post("/orders")
+                .then()
+                .statusCode(201);
+    }
+}
+----
+
+== Why Use Quarkus Network Faults?
+
+Resilience is a property of each service's own code: its timeouts, its retries, its fallbacks.
+Those are tested best where they live, in the service's own test suite, against a dependency made to fail on purpose, rather than in an end-to-end environment where a failure is hard to produce and harder to attribute.
+This extension makes the dependency fail on purpose, inside the test JVM.
+
+- **Nothing to start**: the proxy runs inside the test JVM, so there is no container, no sidecar and no port to manage, and Dev Services work unchanged
+- **Targets are the beans you already inject**: `faults.target(InventoryClient.class)` or `faults.target(DataSource.class)`, with the same qualifiers the application uses
+- **Faults the network really produces**: refused connections, connect timeouts, hangs, latency, resets in the middle of a response, and HTTP error statuses
+- **Consequences are undone**: when a fault ends, and after every test, Agroal pools are flushed and SmallRye Fault Tolerance circuit breakers are reset
+- **A guard against tests that test nothing**: a test whose fault no connection went through fails, and the message names the configuration property to look at
+- **Calls are counted**: every HTTP request is counted and listed, even the ones a fault never relayed, so retries and open circuit breakers can be asserted
+- **Dev UI**: with `quarkus.network-faults.enabled=true` in the dev profile, the xref:dev-ui.adoc[_Network faults_ card] lists every target, applies and ends faults, drops connections and shows the event log of the running application
+
+== What Can You Test?
+
+Any outbound connection the extension recognises in the configuration can be faulted: REST Clients, JDBC and reactive datasources, Redis, MongoDB, GraphQL and gRPC clients, and Quarkus LangChain4j models.
+
+Use it to check:
+
+[.lead]
+*A REST dependency that is down, hangs or cannot be reached*, and with it the `@Fallback`, the `@Timeout` and the connect and read timeouts of the client.
+
+[.lead]
+*A remote API that answers with an error status*, such as a `429` or a `503`, for every request or only for the first few.
+
+[.lead]
+*A database that dies mid-transaction or hangs*, and with it the rollback, the socket timeout of the driver and the validation of pooled connections.
+
+[.lead]
+*A streamed response that is cut or stalls half-way*, right after its headers or after a number of Server-Sent Events.
+
+[.lead]
+*A model provider that fails* behind a Quarkus LangChain4j AI service, and what each failed prompt costs.
+
+[.lead]
+*Retries and circuit breakers*, by counting the requests that were really sent.
+
+== Where to Go Next?
+
+[cols="1,4", frame=none, grid=none]
+|===
+| xref:quickstart.adoc[**Quickstart**]
+| Add the extension and write a first fault test in a few minutes.
+
+| xref:guide-rest-client.adoc[**A failing REST dependency**]
+| Test what a request does when the remote API is down, hangs, cannot be reached or answers with an error status.
+
+| xref:guide-database.adoc[**A failing database**]
+| Test rollback, socket timeouts and pool validation when the database dies or hangs.
+
+| xref:guide-fault-tolerance.adoc[**Fault Tolerance**]
+| Exercise `@Timeout`, `@Fallback`, `@CircuitBreaker` and `@Retry` with the faults they exist for.
+
+| xref:faults.adoc[**Reference Documentation**]
+| Every fault, every moment in a response it can strike at, and every target it can be applied to.
+
+|===
+
+== Why not use Toxiproxy directly?
+
+https://github.com/Shopify/toxiproxy[Toxiproxy] is the de facto tool for injecting network faults.
+It runs as a separate process, usually a container, in which a test creates proxies and at which it then points the application.
+
+That leaves the test in charge of everything around the fault: starting the proxy, routing each connection of the application through it, and cleaning up what a fault leaves behind in the application.
+
+The Quarkus Network Faults extension builds the proxy into the test run and takes care of that for you:
+
+* Targets are discovered from the configuration of the application, Dev Services included
+* A test names a dependency by its bean, not by a proxy name or a port
+* Connection pools are flushed and circuit breakers are reset once a fault ends
+* A fault that never reached the code under test fails the test
+* Requests are counted, so a retry or an open circuit breaker is something a test can assert
+
+Toxiproxy remains the tool for what an in-process proxy cannot reach.
+Kafka clients reconnect to the address the broker advertises, which bypasses the proxy after the first connection, and a `@QuarkusIntegrationTest` runs a packaged application the extension is not part of.
+See xref:targets.adoc#limitations[Limitations] for the details.
+
+#Inside those limits, a fault test is an ordinary `@QuarkusTest` with one more injected bean.#

@@ -1,0 +1,71 @@
+= The Guard
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+The guard fails a test whose fault no connection went through, because such a test cannot have tested the fault.
+
+== Overview
+
+A fault test built on a proxy has a silent failure mode.
+The fault is applied to a proxy that the code under test never talks to, the request succeeds or fails for reasons of its own, the assertions happen to hold, and the test is green while testing nothing.
+
+It is easy to get there:
+
+* The application resolves the address of the dependency through a configuration key the extension did not rewrite, for example a test resource setting the URL under the class name of the client while `application.properties` uses the config key
+* `+target(...)+` names a bean other than the one the request actually goes through
+* A pooled connection opened before the fault is reused, so `hangs()` or `slow()` never see a new connection
+
+TIP: Drop the connections of the pool first, with `dropConnections()`, if the test needs a new one.
+
+== What the Guard Does
+
+The extension turns this into a failure.
+If a fault was active on a target and no connection went through the proxy of that target while it was, the test fails after it finishes:
+
+[source]
+----
+Network fault had no effect:
+  Target [rest-client:inventory]: the 'slow 10ms' fault was active but no connection went
+  through the proxy while it was, so it cannot have affected the test. Is the application
+  really using quarkus.rest-client.inventory.url?
+----
+
+The message names the target and the configuration property the proxy was built from, which is where to look: that property is what the application must be using to reach the dependency.
+
+== When the Dependency Is Not Running
+
+A fault acts on a connection only once the upstream has accepted it, because the proxy connects to the upstream before it relays or answers anything.
+If the dependency itself is unreachable, the application gets a connection reset from the proxy, whatever fault is active, and the guard says so instead:
+
+[source]
+----
+Network fault had no effect:
+  Target [rest-client:inventory]: the 'respondsWith 503' fault was active but the proxy could
+  not connect to the upstream inventory:8080 (Connection refused), so the application's
+  connections were reset instead. A fault acts on a connection only once the upstream has
+  accepted it. Is the dependency behind quarkus.rest-client.inventory.url running?
+----
+
+The proxy also logs a warning each time it cannot reach an upstream, with or without a fault.
+
+== What Counts
+
+* The verdict is per fault
+* A fault on a target made of several connections, such as a datasource with a JDBC and a reactive side, is satisfied by traffic through any of them
+* A fault on xref:faults.adoc#some-requests[some requests] is satisfied by one of those requests only, and the message names them: `no POST /inventory/reserve request went through the proxy`
+
+NOTE: Refused and dropped connection attempts never reach the proxy, so `unavailable()` and `connectTimeout()` cannot be judged and are exempt.
+
+The guard is deliberately strict: a test that applies a fault and then never exercises the dependency asserts nothing about the fault, and the failure says so.
+
+== After Each Test
+
+The guard comes with `NetworkFaultsProfile`, and so does the cleanup: after each test every fault is ended and its consequences are undone, which means Agroal pools are flushed and SmallRye Fault Tolerance circuit breakers are reset.
+
+== Going Further
+
+[.lead]
+* xref:targets.adoc[Targets Reference]
+* xref:faults.adoc[Faults Reference]
+* xref:quickstart.adoc[Quick start]

@@ -1,0 +1,127 @@
+= Using Network Faults with SmallRye Fault Tolerance
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+Network faults are the natural input for `quarkus-smallrye-fault-tolerance` annotations, because they exercise the real client code paths instead of mocking an exception.
+
+This guide shows how to:
+
+* Pick the fault that exercises each annotation
+* End a fault while a request is in flight, to test a `@Retry`
+* Avoid the two surprises a `@Retry` holds
+
+Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
+
+== Prerequisites
+
+The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
+
+== Which Fault for Which Annotation
+
+[cols="1,2,3",options="header"]
+|===
+|Annotation |Fault that exercises it |What to assert
+
+|`@Timeout`
+|`hangs()`, `slow(d)` with `d` above the timeout
+|The response arrives within the timeout, not the read timeout of the client
+
+|`@Fallback`
+|Any
+|The fallback response; use the `Throwable` parameter of the fallback method to record the cause
+
+|`@CircuitBreaker`
+|`unavailable()` repeated `requestVolumeThreshold` times
+|The breaker opens (`CircuitBreakerOpenException`), and is closed again after the fault ends because the extension resets breakers
+
+|`@Retry`
+|`diesMidRequest(onNextWrite())` or `unavailable()`, ended while the request is running
+|Retries absorb a fault that clears within the retry window; a fault that outlasts them fails
+|===
+
+NOTE: The extension resets every circuit breaker when a fault ends and after each test, so a breaker opened by one test never fails the next.
+
+== Ending a Fault While a Request Is in Flight
+
+The retry case needs a fault that clears while the request is still retrying.
+`ActiveFault.end()` does that from the test thread:
+
+[source,java]
+----
+Target api = faults.target(InventoryClient.class);
+long before = api.traffic().httpRequestsSeen();
+ActiveFault fault = api.diesMidRequest(onNextWrite()); // <1>
+CompletableFuture<Integer> status = CompletableFuture.supplyAsync( // <2>
+        () -> when()
+                .post("/orders/retrying?item=retry")
+                .then()
+                .extract()
+                .statusCode());
+// the proxy sees every attempt before it resets it:
+// let a few fail, then clear the fault
+await().atMost(5, TimeUnit.SECONDS) // <3>
+        .until(() -> api.traffic().httpRequestsSeen() >= before + 3);
+fault.end(); // <4>
+assertEquals(201, status.get(10, TimeUnit.SECONDS));
+----
+
+<1> Every attempt is reset before it reaches the upstream.
+<2> The request runs on another thread while the test watches.
+<3> The proxy counts each attempt, so the test knows when a few have failed.
+<4> The next retry reaches the inventory service and the request succeeds.
+
+== What `@Retry` Does Not Do
+
+TIP: `@Retry` adds 200 ms of jitter to its delay by default. Set `jitter = 0` on methods whose tests assert on elapsed time.
+
+CAUTION: `@Retry` does not fix a hang. Without a `@Timeout`, every retry pays the full read timeout of the client, so the total wait multiplies rather than shrinks.
+
+== Counting the Attempts
+
+A retry annotation that is present is not a retry annotation that does what you think.
+The proxy counts the requests that were really sent, which turns the difference into an assertion:
+
+[source,java]
+----
+Target api = faults.target(InventoryClient.class);
+long before = api.traffic().httpRequestsSeen();
+try (ActiveFault fault = api.diesMidRequest(onNextWrite())) {
+    when()
+            .post("/orders/retrying?item=count")
+            .then()
+            .statusCode(503);
+}
+// one attempt plus eight retries
+assertEquals(9, api.traffic().httpRequestsSeen() - before);
+// every retry sent the same body, and the delay between them held
+Attempts.last(api.traffic().httpRequests(), 9).assertSameBody().assertGapsAtLeast(Duration.ofMillis(200));
+----
+
+See xref:traffic.adoc[Counting Calls] for what is counted, and for the shape of a retry a test can assert.
+
+== Fail Open or Fail Closed
+
+When the inventory service cannot be reached, the sample answers `503 inventory unavailable` and takes no order: it fails closed.
+A shop that can backorder might fail open instead and take the order anyway, and a concert ticket site cannot, since a seat that is not there cannot be refunded into existence.
+Which is right is a business decision, not a library setting, and the same fault tests either one:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).unavailable()) {
+    when()
+            .post("/orders?item=a")
+            .then()
+            .statusCode(503); // fails closed; a shop that fails open asserts 201 and a backorder here
+}
+----
+
+A fallback that fails open should be tested with `respondsWith(500)` and `hangs()` as well as `unavailable()`: a dependency that answers slowly or wrongly is the case a fallback most often gets wrong.
+
+== Going Further
+
+[.lead]
+* https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus Fault Tolerance Guide]
+* xref:traffic.adoc[Counting Calls]
+* xref:faults.adoc[Faults Reference]
+* xref:guide-rest-client.adoc[Testing a failing REST dependency]

@@ -1,0 +1,331 @@
+= Faults Reference
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A _fault_ is what a test applies to a xref:targets.adoc[target] to make the dependency behind it fail in a chosen way.
+
+== Overview
+
+Every fault method returns an `ActiveFault`.
+Close it to end the fault, and use try-with-resources so a test can assert recovery in the same method:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).unavailable()) {
+    // the dependency is down
+}
+// the dependency is back
+----
+
+Anything left open is ended after the test.
+
+IMPORTANT: A fault on a whole target has it to itself. Applying a second while one is still active throws `IllegalStateException` naming the active one, rather than replacing it or combining the two. The same goes for `faults.all()`, or a datasource with two connections, when any connection behind it already has a fault. Faults on <<some-requests,different requests>> of one target, on the other hand, are active together.
+
+[#connection-faults]
+== Connection Faults
+
+[cols="2,4,1",options="header"]
+|===
+|Fault |What the application sees |Faithful?
+
+|`unavailable()`
+|New connections refused (`ECONNREFUSED`), live connections reset
+|Yes
+
+|`connectTimeout()`
+|New connection attempts hang until the connect timeout of the client; live connections keep working
+|Yes, Linux only
+
+|`hangs()`
+|Connections stay open, nothing is relayed: the read timeout of the client is the only bound
+|Yes
+
+|`hangs(moment)`
+|Relayed up to a moment in the response, then the connection hangs; the rest follows when the fault ends
+|Yes
+
+|`slow(Duration)`
+|Every buffer is delayed
+|Yes
+
+|`diesMidRequest()`
+|The connection is reset when the upstream starts responding
+|Yes
+
+|`diesMidRequest(moment)`
+|The connection is reset at a moment in the response
+|Yes
+
+|`closes()`
+|The connection is closed cleanly, a FIN rather than a reset, when the upstream starts responding: the request was processed and nothing came back
+|Yes
+
+|`closes(moment)`
+|The connection is closed cleanly at a moment in the response: a body cut short of its `Content-Length`, a chunked stream whose last chunk never comes
+|Yes
+
+|`http().respondsWith(status)`
+|Every request is answered with a synthetic HTTP response of that status instead of reaching the upstream
+|Yes, plaintext HTTP/1.x only
+
+|`dropConnections()`
+|One-shot: every pooled connection is reset now
+|Yes
+|===
+
+NOTE: `connectTimeout()` relies on the Linux kernel silently dropping SYNs when the accept queue of a listener is full. On other operating systems it throws `UnsupportedOperationException`.
+
+[#moments]
+== Moments
+
+The moment at which `diesMidRequest(moment)`, `closes(moment)` and `hangs(moment)` strike is a `Moment`, built from its static methods.
+The ones that read an HTTP response are grouped under `Moment.Http`.
+
+[cols="2,5",options="header"]
+|===
+|Moment |Where the fault strikes
+
+|`afterBytes(n)`
+|After `n` response bytes, whatever the protocol
+
+|`onNextWrite()`
+|When the client next sends data, so the request never reaches the upstream
+
+|`Http.afterHeaders()`
+|After the status line and headers of a plaintext HTTP/1.x response, before any of the body
+
+|`Http.afterChunks(n)`
+|After `n` chunks of a chunked HTTP/1.1 body, on the chunk boundary
+
+|`Http.afterSseEvents(n)`
+|After `n` Server-Sent Events of a `text/event-stream` response, right after the blank line that ends the last one
+|===
+
+`diesMidRequest()` without a moment is `diesMidRequest(afterBytes(0))`: the reset comes as soon as the upstream starts to respond; `closes()` is `closes(afterBytes(0))` the same way.
+The difference between the two is what the client sees: a reset is an error on the socket, a clean close is an end of stream.
+A client that knows how long the response is, from `Content-Length` or the chunked encoding, notices that it is short and fails, with a different error from a reset; a client reading a response of unknown length until the connection closes takes a truncated one for complete.
+
+=== HTTP Moments
+
+The `Http` moments read the response, so they need plaintext HTTP/1.x.
+They can only be applied to a target reached over plaintext HTTP, an `http://` or `ws://` address.
+
+IMPORTANT: Applying an HTTP moment, or `http().respondsWith(status)`, to any other target throws `UnsupportedOperationException`: a datasource, a Redis or MongoDB client, or a client configured with an `https://` URL. The message names the target and the property its address came from. A target made of several connections is refused as a whole when any of them is not plaintext HTTP.
+
+The responses on a connection are followed message by message:
+
+* Chunks and events are counted from the start of their response, so on a connection that is kept alive the fault strikes in the first response that gets that far
+* An interim response, such as `100 Continue`, is relayed, and the response after it is the one that is cut
+* `afterChunks(n)` strikes in a chunked response only; a response that is not chunked is relayed whole
+* `afterSseEvents(n)` counts the events of a `text/event-stream` response, whether or not it is chunked; any other response is relayed whole
+
+They are made for streamed responses; see xref:guide-streamed-responses.adoc[Testing streamed responses].
+
+[#http-responses]
+== HTTP Responses
+
+`http().respondsWith(status)` answers every request with a synthetic HTTP response instead of relaying it to the upstream, so the application sees the remote API fail the way it would for that status.
+The response carries `Connection: close` and the connection is closed cleanly once it is written, so a pooled client opens a fresh connection for its next call, which is answered too.
+
+The returned `HttpResponse` is the `ActiveFault`, and refines the response:
+
+[cols="2,5",options="header"]
+|===
+|Method |Effect
+
+|`body(String)`
+|The response body, sent as UTF-8. A `Content-Length` is set from it unless one was given with `header`
+
+|`bodyOfLength(long)`
+|A body of that many bytes of filler, streamed rather than held in memory, with `Content-Length` to match: the unbounded result set of _Release It!_, for a test of what a response far larger than expected does to the application. Not combined with `body`
+
+|`contentType(String)`
+|The `Content-Type` of the response
+
+|`header(String, String)`
+|An extra response header; may be called more than once
+
+|===
+
+Which requests are answered is decided before the fault is applied, with <<some-requests,`http().forFirst(n)`, `every(n)` or `after(n)`>>: `target.http().forFirst(2).http().respondsWith(503)` fails two calls and lets a `@Retry` succeed on the third.
+
+A response that is not valid for its content type needs no fault of its own: `contentType("application/json").body("{")` is one, and so is a `200` with a body the client cannot map.
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class)
+        .http().respondsWith(429)
+        .contentType("application/json")
+        .body("{\"error\":\"rate limited\"}")
+        .header("Retry-After", "30")) {
+    when()
+            .post("/orders?item=a")
+            .then()
+            .statusCode(503);
+}
+----
+
+NOTE: The response is synthesised from a plaintext HTTP/1.x request, so the target has to be reached over plaintext HTTP; see <<moments,HTTP Moments>> for what happens otherwise.
+
+IMPORTANT: The upstream still has to be reachable. The proxy connects to it before answering, although nothing is sent to it; against a dependency that is not running the application gets a connection reset, and xref:guard.adoc[the guard] reports the unreachable upstream.
+
+[#some-requests]
+== Faults on Some Requests
+
+A fault on a target acts on everything that goes through its proxy.
+A fault on an `Endpoint` acts on some of the requests only, and relays the others untouched, even on the same pooled connection.
+
+A method reference names the requests one method of a REST Client sends, from its `@GET`, `@POST` and the like and its `@Path`:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient::reserve).hangs()) {
+    when()
+            .post("/orders?item=a")
+            .then()
+            .statusCode(503);
+    // the other methods of InventoryClient keep working
+}
+----
+
+`http().requests(method, path)` names them on any plaintext HTTP target, such as the embedding calls of a model:
+
+[source,java]
+----
+faults.target(ChatModel.class).http().requests("POST", "/embeddings").http().respondsWith(429);
+----
+
+The path is compared with the end of the request path, so a base path in the URL of the client does not have to be repeated: `/embeddings` covers `POST /v1/embeddings`.
+A segment may be a template parameter as `@Path` writes them, `+{id}+` for any one segment or `+{id: [0-9]+}+` for one that matches a regular expression, and the query string is not compared.
+Calling `requests` on an endpoint narrows it further.
+
+=== Some of the Requests, by Count
+
+`http().forFirst(n)`, `http().every(n)` and `http().after(n)` take some of the requests an endpoint covers, counted across its connections in the order they arrive, and return an endpoint that any fault can be applied to:
+
+[cols="2,4",options="header"]
+|===
+|Selection |The requests the fault acts on
+
+|`forFirst(n)`
+|The first `n`, then every request is relayed: a transient failure the dependency recovers from
+
+|`every(n)`
+|Every `n`th, the first one included: one call in `n` fails, or is slow, for a retry budget, a breaker's failure ratio, or tail latency
+
+|`after(n)`
+|Every one after the first `n`: the dependency fails once the test is under way
+|===
+
+[source,java]
+----
+// one reservation in two takes longer than the caller's @Timeout
+try (ActiveFault f = faults.target(InventoryClient::reserve).http().every(2).slow(Duration.ofMillis(1500))) {
+    when().post("/orders?item=a").then().statusCode(503);
+    when().post("/orders?item=b").then().statusCode(201);
+    when().post("/orders?item=c").then().statusCode(503);
+}
+----
+
+The count is deterministic: the test knows which calls fail, because it sends them.
+One selection per endpoint; a second throws `IllegalStateException`.
+Faults that fire at random or on a clock were left out on purpose: a test that fails one run in twenty is worse than no test.
+
+An endpoint takes every fault of a target except the three that act on connections before any request is sent on them: `unavailable()`, `connectTimeout()` and `dropConnections()`.
+On an endpoint:
+
+* `hangs()` holds a covered request as it arrives, and its connection with it; it reaches the upstream when the fault ends
+* A moment counts the response of a covered request, and `onNextWrite()` strikes when the client sends one
+* `slow`, `advanced()` and `respondsWith` delay, throttle or answer the covered requests and their responses only
+
+NOTE: Telling one request from another needs plaintext HTTP/1.x, so a fault on an endpoint can only be applied to a target reached over an `http://` or `ws://` address.
+
+=== Several at Once
+
+Faults on different requests of one target are active together, each acting on its own requests, so one method of a client can hang while another fails with a status:
+
+[source,java]
+----
+try (ActiveFault hang = faults.target(InventoryClient::reserve).hangs();
+        ActiveFault error = faults.target(InventoryClient::stockUpdates).http().respondsWith(500)) {
+    when()
+            .post("/orders?item=c")
+            .then()
+            .statusCode(503);
+    when()
+            .get("/stock/updates")
+            .then()
+            .statusCode(502);
+}
+----
+
+* Ending one leaves the others in place
+* Two faults on exactly the same requests are refused with `IllegalStateException`
+* Where the requests of two endpoints overlap, such as `requests("POST", "/inventory/{action}")` and `InventoryClient::reserve`, the fault applied first acts on the requests they share
+* A fault on the whole target is refused while faults on some of its requests are active, and the other way round
+
+=== Method References
+
+A method reference must be of the form `Type::method`: a lambda, or a reference bound to an instance such as `client::reserve`, throws `IllegalArgumentException`.
+A method with up to five parameters can be named, and one that is overloaded with the same number of parameters needs a cast to pick one.
+
+== Advanced Faults
+
+`advanced()` holds faults in the style of the toxics of Toxiproxy, for tests that need more control than the faults above.
+Each takes a `Direction`: `UPSTREAM` for data from the application to the upstream, `DOWNSTREAM` for data from the upstream to the application, or `BOTH`.
+
+[cols="3,4",options="header"]
+|===
+|Fault |Effect
+
+|`latency(Duration latency, Duration jitter, Direction)`
+|Delays each buffer by `latency` plus a random amount up to `jitter`
+
+|`bandwidth(long bytesPerSecond, Direction)`
+|Limits throughput to that number of bytes per second
+
+|`slice(int chunkSize, Duration delay, Direction)`
+|Splits every buffer larger than `chunkSize` into chunks of at most `chunkSize` bytes, the first sent at once and each following one `delay` after the previous
+|===
+
+[source,java]
+----
+try (ActiveFault f = target.advanced().latency(Duration.ofMillis(100),
+        Duration.ofMillis(50), Advanced.Direction.UPSTREAM)) {
+    // every request is delayed by 100 to 150 ms on its way to the upstream
+}
+----
+
+== Every Target at Once
+
+`faults.all()` is every known target, for "everything is down" tests:
+
+[source,java]
+----
+try (ActiveFault f = faults.all().unavailable()) {
+    when()
+            .post("/orders?item=h")
+            .then()
+            .statusCode(503);
+}
+----
+
+== What Happens When a Fault Ends
+
+A fault leaves consequences behind in the application: pooled connections flagged as broken, circuit breakers left open.
+When a fault ends, and after every test, the extension undoes them:
+
+* Agroal pools are flushed
+* Every SmallRye Fault Tolerance circuit breaker is reset
+
+`faults.resetAll()` ends every active fault and runs the same cleanup on demand.
+
+== Going Further
+
+[.lead]
+* xref:targets.adoc[Targets Reference]
+* xref:traffic.adoc[Counting Calls]
+* xref:guard.adoc[The Guard]
+* xref:guide-rest-client.adoc[Testing a failing REST dependency]
+* xref:guide-database.adoc[Testing a failing database]

@@ -1,0 +1,233 @@
+= Testing a Failing REST Dependency
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A REST dependency fails in more ways than one, and each way exercises a different part of the calling code: the fallback, the timeout annotation, the timeouts of the client, the handling of an error status.
+
+This guide shows how to test a request when the REST service it depends on:
+
+* Is down
+* Answers with an error status
+* Hangs
+* Cannot be reached
+
+Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
+
+== Prerequisites
+
+The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
+
+The samples address the client by its interface, `faults.target(InventoryClient.class)`.
+
+== The Dependency Is Down
+
+`unavailable()` refuses new connections and resets the live ones:
+
+[source,java]
+----
+@Test
+public void inventoryUnavailable() {
+    try (ActiveFault f = faults.target(InventoryClient.class).unavailable()) {
+        when()
+                .post("/orders?item=a")
+                .then()
+                .statusCode(503)
+                .body(is("inventory unavailable"));
+    }
+
+    when()
+            .post("/orders?item=a")
+            .then()
+            .statusCode(201);
+}
+----
+
+What this exercises: the `@Fallback` on the call, or, without one, how your exception mapping turns a `ProcessingException` into a response.
+
+== The Dependency Returns an Error Status
+
+`http().respondsWith(status)` answers every request with a synthetic HTTP response instead of relaying it to the upstream, so the REST Client sees the remote API fail with a status of your choosing.
+A body, a content type and headers can be added for the client to read back.
+This snippet and the next call the client directly, so the test sees what the client sees rather than the fallback; the test injects it as `@RestClient Instance<InventoryClient> inventoryClient` and calls `inventoryClient.get()`, so that the client is created inside the test profile:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class)
+        .http().respondsWith(429)
+        .contentType("application/json")
+        .body("{\"error\":\"rate limited\"}")
+        .header("Retry-After", "30")) {
+    WebApplicationException failure = assertThrows(WebApplicationException.class,
+            () -> inventoryClient.get().reserve("widget"));
+    Response response = failure.getResponse();
+    assertEquals(429, response.getStatus());
+    assertEquals("30", response.getHeaderString("Retry-After"));
+    assertTrue(response.readEntity(String.class).contains("rate limited"));
+}
+----
+
+What this exercises: how the call handles a `4xx` or `5xx` from the dependency, the `WebApplicationException` the REST Client raises, and any `Retry-After` or error-body handling.
+
+NOTE: The response is synthesised from a plaintext HTTP/1.x request, so this fault applies to `http://` targets only.
+
+=== A Failure That Clears
+
+`http().forFirst(n)` selects the first `n` requests, so a fault on that endpoint acts on them and the rest reach the real upstream: the dependency appears to recover.
+That is the transient failure a `@Retry` can ride out:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).http().forFirst(1).http().respondsWith(503)) {
+    WebApplicationException failure = assertThrows(WebApplicationException.class,
+            () -> inventoryClient.get().reserve("widget"));
+    assertEquals(503, failure.getResponse().getStatus());
+
+    // the next call reaches the real upstream again
+    assertEquals("reserved", inventoryClient.get().reserve("widget"));
+}
+----
+
+=== A Failure in Every Other Call
+
+`http().every(n)` selects one request in `n`, and `http().after(n)` every request after the first `n`.
+Both count requests in the order they arrive, so a test knows which calls fail, and any fault can follow them, `slow(...)` for tail latency as well as `respondsWith`:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).http().every(2).http().respondsWith(503)) {
+    assertThrows(WebApplicationException.class, () -> inventoryClient.get().reserve("widget"));
+    assertEquals("reserved", inventoryClient.get().reserve("widget"));
+    assertThrows(WebApplicationException.class, () -> inventoryClient.get().reserve("widget"));
+}
+----
+
+What this exercises: a retry budget, or the failure ratio of a circuit breaker, against a dependency that fails some of the time rather than all of it.
+
+=== A Response Far Too Large
+
+`bodyOfLength(bytes)` streams a body of that size, so the test sees what the client and the application do with a response far larger than they expect, without the test itself holding it in memory:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).http().respondsWith(200)
+        .contentType("text/plain").bodyOfLength(20_000_000)) {
+    assertEquals(20_000_000, inventoryClient.get().reserve("widget").length());
+}
+----
+
+What this exercises: the unbounded result set, as _Release It!_ calls it: whether anything bounds the size of a response before it is read into memory.
+
+== The Dependency Hangs
+
+`hangs()` keeps connections open and relays nothing:
+
+[source,java]
+----
+try (ActiveFault f = faults.target(InventoryClient.class).hangs()) {
+    long ms = timed(() -> when()
+            .post("/orders?item=c")
+            .then()
+            .statusCode(503));
+    assertTrue(ms >= 900 && ms < 1_900,
+            "expected the 1s @Timeout to fire, took " + ms + "ms");
+}
+----
+
+What this exercises: `@Timeout`, and the `read-timeout` of the REST Client.
+
+[IMPORTANT]
+.The defaults are long
+====
+The default read timeout is 30 seconds, and the default connect timeout 15 seconds (`RestClientsConfig` on Quarkus main).
+A hung dependency with default settings therefore holds every request for 30 seconds; with a worker-thread endpoint that is 30 seconds of a worker thread per request.
+====
+
+== The Dependency Cannot Be Reached
+
+`connectTimeout()` lets new connection attempts hang until the connect timeout of the client:
+
+[source,java]
+----
+faults.target(InventoryClient.class).dropConnections(); // force a fresh connection
+try (ActiveFault f = faults.target(InventoryClient.class).connectTimeout()) {
+    when()
+            .post("/orders?item=b")
+            .then()
+            .statusCode(503);
+}
+----
+
+What this exercises: `connect-timeout`, which is separate from the read timeout.
+
+TIP: Pooled connections keep working during this fault, so drop them first if the test needs a new one.
+
+NOTE: `connectTimeout()` is available on Linux only. See xref:faults.adoc#connection-faults[Faults].
+
+== One Method Fails
+
+A method reference names the requests one method of the client sends, so a fault can leave its other methods working, over the same pooled connections:
+
+[source,java]
+----
+@Test
+public void reserveHangsWhileTheStreamKeepsWorking() {
+    try (ActiveFault f = faults.target(InventoryClient::reserve).hangs()) {
+        when()
+                .post("/orders?item=a")
+                .then()
+                .statusCode(503)
+                .body(is("inventory unavailable"));
+        when()
+                .get("/stock/updates")
+                .then()
+                .statusCode(200)
+                .body(is("1,2,3"));
+    }
+}
+----
+
+What this exercises: a request that degrades on its own while the rest of the dependency stays healthy.
+
+Faults on different methods are active together, so each method can fail in its own way:
+
+[source,java]
+----
+try (ActiveFault hang = faults.target(InventoryClient::reserve).hangs();
+        ActiveFault error = faults.target(InventoryClient::stockUpdates).http().respondsWith(500)) {
+    when()
+            .post("/orders?item=c")
+            .then()
+            .statusCode(503);
+    when()
+            .get("/stock/updates")
+            .then()
+            .statusCode(502);
+}
+----
+
+`faults.target(InventoryClient::reserve).traffic()` counts the requests that method sent, apart from those of the other methods.
+See xref:faults.adoc#some-requests[Faults on Some Requests] for the faults this takes.
+
+== Everything Is Down
+
+`faults.all()` is every known target at once:
+
+[source,java]
+----
+try (ActiveFault f = faults.all().unavailable()) {
+    when()
+            .post("/orders?item=h")
+            .then()
+            .statusCode(503);
+}
+----
+
+== Going Further
+
+[.lead]
+* xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]
+* xref:guide-streamed-responses.adoc[Testing streamed responses]
+* xref:traffic.adoc[Counting the calls that were made]
+* xref:faults.adoc[Faults Reference]
+* xref:timeouts.adoc[Client Timeout Defaults]

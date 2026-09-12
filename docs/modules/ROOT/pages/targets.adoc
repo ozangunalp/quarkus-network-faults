@@ -1,0 +1,247 @@
+= Targets Reference
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A _target_ is one outbound dependency of the application, fronted by a proxy.
+xref:faults.adoc[Faults] are applied to it.
+
+== Overview
+
+Targets are discovered from configuration and addressed by the CDI bean the application uses to reach them.
+`NetworkFaults` has no method that knows a technology; the extension owning the bean recognises it behind the scenes.
+
+[source,java]
+----
+Target inventory = faults.target(InventoryClient.class); // <1>
+Target users = faults.target(DataSource.class, // <2>
+        new DataSourceLiteral("users"));
+Target everything = faults.all(); // <3>
+----
+
+<1> A REST Client, by its interface.
+<2> A named datasource, by its type and qualifier.
+<3> Every known target at once.
+
+A target appears when its configuration is first read.
+
+TIP: Dev Services work unchanged: their coordinates are configuration too.
+
+== Addressing a Target
+
+=== By Bean Type and Qualifiers
+
+Pass the type and the qualifiers the application would inject:
+
+[cols="2,3",options="header"]
+|===
+|Dependency |Target
+
+|REST Client
+|`faults.target(InventoryClient.class)`; the `@RestClient` qualifier is implied by the interface
+
+|JDBC datasource
+|`faults.target(DataSource.class)` for the default one, `faults.target(DataSource.class, new DataSourceLiteral("users"))` for a named one
+
+|Reactive datasource
+|`faults.target(Pool.class)`
+
+|Persistence unit
+|`faults.target(EntityManager.class)` or `faults.target(Mutiny.SessionFactory.class)`, which is the datasource behind that unit
+
+|Quarkus Data repository
+|`faults.target(Person.Repository.class)`, which is the datasource behind its persistence unit
+
+|Redis client
+|`faults.target(RedisDataSource.class)` for the default one, `faults.target(RedisDataSource.class, RedisClientName.Literal.of("cache"))` for a named one
+
+|MongoDB client
+|`faults.target(MongoClient.class)`, with `+MongoClientName.Literal.of(...)+` for a named one
+
+|GraphQL client
+|`faults.target(LuckyClient.class)` for a typesafe client
+
+|gRPC client
+|`faults.target(Greeter.class, GrpcClient.Literal.of("greeter"))`
+
+|Kafka channel
+|`faults.target(MutinyEmitter.class, channel("orders-out"))`, where `channel` builds an `@Channel` literal, or `faults.target(KafkaClientService.class)`; see the <<kafka,caveat>>
+
+|Quarkus LangChain4j model
+|`faults.target(ChatModel.class, ModelName.Literal.of("summarizer"))`, or `faults.target(Summarizer.class)` for the AI service that uses it
+|===
+
+=== By `Instance`
+
+Pass an injected `Instance`, and the target is the one behind the bean it resolves to:
+
+[source,java]
+----
+@Inject
+@RestClient
+Instance<InventoryClient> inventoryClient;
+
+Target inventory = faults.target(inventoryClient);
+----
+
+[#registry-names]
+== Registry Names
+
+Every target has a registry name, a family and segments: `family:segment:segment`.
+Any leading part covers everything beneath it, so `datasource` means both connections of every datasource.
+
+NOTE: A registry name such as `datasource:<default>:jdbc` cannot be used to select a target from a test. The names show up in `targetNames()`, in error messages and in the Dev UI.
+
+== Recognised Properties
+
+[cols="1,1",options="header"]
+|===
+|Property |Target names
+
+|`quarkus.datasource[.<name>].jdbc.url`
+|`datasource:<name>:jdbc`; `datasource` is every datasource, `datasource:<default>` both connections of the default one
+
+|`quarkus.datasource[.<name>].reactive.url`
+|`datasource:<name>:reactive`
+
+|`quarkus.rest-client.<key>.url` / `.uri`, or `+@RegisterRestClient(baseUri = ...)+`
+|`rest-client:<configKey or simple class name>`
+
+|`kafka.bootstrap.servers`, `+mp.messaging.*.bootstrap.servers+`
+|`kafka:<host>:<port>`; `kafka` is every broker (see the <<kafka,Kafka caveat>>)
+
+|`quarkus.langchain4j.<provider>[.<name>].base-url`
+|`langchain4j:<provider>:<name>`, `<default>` for the unnamed model; `langchain4j:<provider>` is every model of the provider
+
+|`quarkus.redis[.<name>].hosts`
+|`redis:<name>`, `+#2+` and up for further hosts of one client; `redis` is every client
+
+|`quarkus.mongodb[.<name>].connection-string`, `quarkus.mongodb[.<name>].hosts`
+|`mongodb:<name>`, `+#2+` and up for further servers of one client
+
+|`quarkus.smallrye-graphql-client.<key>.url`, or `+@GraphQLClientApi(endpoint = ...)+`
+|`graphql-client:<configKey or simple class name>` for a typesafe client, `graphql-client:<name>` for a dynamic one, `graphql-client:default` for a dynamic one without `@GraphQLClient`
+
+|`quarkus.grpc.clients.<name>.host`, `.port`, `.test-port`
+|`grpc-client:<name>`
+|===
+
+`NetworkFaults` itself knows nothing about datasources or REST Clients.
+Each technology module holds its descriptors and its `BeanTargetResolver`, so a new extension brings both; see xref:extending.adoc[Declaring Targets from Another Extension].
+
+== REST Client
+
+A client is addressed by its interface, whether it was injected with the `@RestClient` qualifier or by the interface alone.
+Its URL may be configured under its `configKey`, its class name or its simple name, and all three name the same target.
+A URL that comes from `+@RegisterRestClient(baseUri = ...)+` is proxied as well.
+
+See xref:guide-rest-client.adoc[Testing a failing REST dependency].
+
+== Datasources
+
+`faults.target(DataSource.class)` is the JDBC connection of a datasource and `faults.target(Pool.class)` its reactive one.
+A named datasource takes its qualifier.
+
+Multi-host JDBC URLs are left untouched.
+Reactive URL lists get one proxy per entry.
+
+See xref:guide-database.adoc[Testing a failing database].
+
+== Hibernate ORM, Hibernate Reactive and Quarkus Data
+
+None of these has an address; they reach a datasource through a persistence unit.
+
+An `EntityManager`, `EntityManagerFactory`, `Session`, `SessionFactory` or `StatelessSession`, or the Mutiny counterparts Hibernate Reactive injects, is the unit its `@PersistenceUnit` qualifier names, the default one without it, and resolves to the datasource of that unit.
+`faults.target(EntityManager.class)` names the same target as `faults.target(DataSource.class)`, and `faults.target(Mutiny.SessionFactory.class)` the same as `faults.target(Pool.class)`.
+
+Quarkus Data repositories (interfaces nested in an entity) find their persistence unit through the entity; plain Jakarta Data `@Repository` interfaces through `dataStore`.
+A reactive repository resolves to the reactive connection of the datasource, a blocking one to its JDBC connection, even when a blocking and a reactive unit share a name, as the default units do when both Hibernate ORM and Hibernate Reactive are present.
+A Quarkus Data repository is reactive when it extends a `Reactive` repository, such as `ManagedRepository.Reactive`; a Jakarta Data repository when it declares a getter for a Mutiny session.
+
+NOTE: Hibernate Reactive has no query timeout of its own; the sample bounds each call with a Mutiny `+ifNoItem().after(...)+`.
+
+== Redis
+
+`faults.target(RedisDataSource.class)` is the default client and `RedisClientName.Literal.of("cache")` selects a named one; `ReactiveRedisDataSource` and the Vert.x `Redis` and `RedisAPI` beans resolve the same way.
+
+The pool drops a connection the moment it is closed or reset, so nothing needs flushing after a fault.
+A hung Redis is bounded by `quarkus.redis.timeout` for the blocking data source, ten seconds by default; the sample sets two.
+
+WARNING: Cluster and sentinel clients learn the addresses of the other nodes from the server and connect to them directly, which bypasses the proxy the way Kafka does. Standalone Redis is fully proxied.
+
+== MongoDB
+
+`faults.target(MongoClient.class)` or the reactive client, with `MongoClientName.Literal.of` for a named one.
+
+The connection string is rewritten server by server, credentials, database and options kept; a `mongodb+srv://` string names a DNS record and is left alone.
+
+TIP: The defaults of the driver wait thirty seconds to select a server, so set `quarkus.mongodb.server-selection-timeout` and `read-timeout` to what the test should tolerate; the sample sets two seconds.
+
+WARNING: A replica set advertises its members and the driver connects to them directly, which bypasses the proxy as Kafka does. A standalone server is fully proxied.
+
+== GraphQL Client
+
+A typesafe client is addressed by its interface, `faults.target(LuckyClient.class)`, whichever of its config key, class name or simple name its URL is configured under.
+
+A dynamic `DynamicGraphQLClient` is named by the `@GraphQLClient("lucky")` annotation on its injection point, and that annotation is not a CDI qualifier, so the bean itself carries no name.
+Pass the annotation along with the type, `faults.target(DynamicGraphQLClient.class, named("lucky"))`, with a small `AnnotationLiteral` of your own since SmallRye ships none, or leave it out to cover every GraphQL client.
+
+NOTE: The client has no timeout of its own; a hung endpoint holds the call until you bound it.
+
+== gRPC Client
+
+The client is addressed by any of its injectable types plus its name, `faults.target(Greeter.class, GrpcClient.Literal.of("greeter"))`.
+The name has to be spelled out because a `@GrpcClient` that takes it from the field name carries none.
+
+[IMPORTANT]
+.Set `test-port`
+====
+The address is split over `host`, `port` and `test-port`, and in tests Quarkus ignores `port`: without `test-port` the client is pointed at the HTTP port of the application itself, which the extension cannot proxy.
+Set `test-port` for a client you want to fault, even when it is the same value as `port`.
+====
+
+In `integration-tests/grpc` a `deadline` configured on the client did not end a call against a hung connection; the sample bounds the call with `+await().atMost(...)+` on the Mutiny client instead.
+
+TIP: A channel keeps its connection, so drop the connections of the target before `connectTimeout()` or `unavailable()` if the test needs a new connect.
+
+[#kafka]
+== Kafka
+
+The bootstrap address is proxied, so `faults.target(MutinyEmitter.class, channel("orders-out"))` exists and the first metadata fetch goes through it.
+Any bean injected with `@Channel`, an `Emitter` or `MutinyEmitter`, and the `KafkaClientService` resolve to every broker.
+
+[WARNING]
+.Only the bootstrap connection is proxied
+====
+The broker advertises its real address in the metadata and the client connects there directly, so faults on the Kafka target do not reach the producer or consumer.
+The test `KafkaBootstrapOnlyTest` pins this.
+
+Making Kafka faults real needs the Dev Services launchers to advertise a port the proxy reserves, which is a change inside Quarkus.
+Until then, use the Kafka companion with Toxiproxy for that case.
+====
+
+== Quarkus LangChain4j
+
+A model is addressed by its bean and `@ModelName`, or by the AI service that uses it.
+The registry name `langchain4j:openai` covers every OpenAI model.
+
+See xref:guide-langchain4j.adoc[Testing Quarkus LangChain4j models].
+
+[#limitations]
+== Limitations
+
+The proxy sits where the configuration of the application says a dependency is.
+What it cannot do follows from that.
+
+* *Clients that learn addresses from the server.* Kafka, Redis in cluster or sentinel mode, MongoDB replica sets, and anything else that advertises its own address bypasses the proxy after the first connection. Standalone servers are fine.
+* *TLS.* TLS connections pass through, but the certificate must be valid for `127.0.0.1`, and the `Host` header and SNI change with the rewritten URL. That is fine for local stubs, not for real hosts.
+* *HTTP over TLS or HTTP/2.* Everything that reads HTTP needs plaintext HTTP/1.x: request counting, `http().respondsWith(status)`, faults on xref:faults.adoc#some-requests[some requests], and the moments under `Moment.Http`. Over TLS the bytes are relayed opaquely, requests are not counted, and applying an HTTP fault throws `UnsupportedOperationException`.
+* *Multi-host JDBC URLs.* They are left untouched. Reactive URL lists get one proxy per entry.
+* *Operating systems.* `connectTimeout()` is Linux only.
+* *Packaged applications.* The extension must be on the test classpath of the application under test, so it does not apply to `@QuarkusIntegrationTest` runs of a packaged application.
+
+== Going Further
+
+[.lead]
+* xref:faults.adoc[Faults Reference]
+* xref:extending.adoc[Declaring Targets from Another Extension]

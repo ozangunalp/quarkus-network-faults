@@ -1,0 +1,110 @@
+= Client Timeout Defaults
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+A fault test mostly finds one thing: a timeout that is longer than anyone assumed, or not there at all.
+This page lists the defaults that decide how long a failed dependency holds a request.
+
+== Defaults Worth Knowing
+
+Recorded from the Quarkus `main` sources and the client libraries it ships, September 2026.
+
+[cols="2,2,2",options="header"]
+|===
+|Client |Setting |Default
+
+|REST Client
+|`connect-timeout`
+|15000 ms
+
+|REST Client
+|`read-timeout`
+|30000 ms
+
+|Vert.x clients (reactive SQL, HTTP)
+|`connectTimeout`
+|60000 ms
+
+|Vert.x SQL client, Hibernate Reactive
+|statement timeout
+|none
+
+|Agroal
+|`acquisition-timeout`
+|5 s
+
+|Agroal
+|`foreground-validation-interval`
+|unset: no validation on borrow
+
+|PostgreSQL JDBC
+|`connectTimeout`
+|10 s
+
+|PostgreSQL JDBC
+|`socketTimeout`
+|0: none
+
+|PostgreSQL JDBC
+|`loginTimeout`
+|0: none; it bounds the handshake of a connection the pool is creating, which `acquisition-timeout` does not, and Agroal warns when it is the longer of the two
+
+|Kafka producer
+|`delivery.timeout.ms`
+|120000 ms
+
+|Kafka producer
+|`max.block.ms`
+|60000 ms
+
+|Kafka producer
+|`request.timeout.ms`
+|30000 ms
+|===
+
+Most of what these tests will teach a team is in this table.
+
+== What to Set
+
+The defaults make a hung or unreachable dependency cost 15 to 30 seconds per request.
+
+* Add a `@Timeout`, or lower the timeouts of the client, before anything else
+* Set a JDBC socket timeout, since the PostgreSQL driver has none, and a `loginTimeout` shorter than `acquisition-timeout`, which bounds the wait for an existing connection rather than the creation of a new one; see xref:guide-pool-exhaustion.adoc[Testing pool exhaustion]
+* Set `foreground-validation-interval` if a database blip must not fail the first request afterwards
+
+Other clients have defaults of their own:
+
+[cols="2,5",options="header"]
+|===
+|Client |What bounds a hang
+
+|Redis
+|`quarkus.redis.timeout` for the blocking data source, ten seconds by default
+
+|MongoDB
+|`quarkus.mongodb.server-selection-timeout`, thirty seconds by default, and `read-timeout`
+
+|GraphQL client
+|Nothing: the client has no timeout of its own
+
+|gRPC client
+|A `deadline` configured on the client did not end a call against a hung connection; bound the call itself
+
+|Hibernate Reactive
+|Nothing: there is no query timeout
+
+|Quarkus LangChain4j
+|`quarkus.langchain4j.timeout`; a `@Timeout` cannot interrupt the blocking model client
+
+|A streamed response
+|Not the read timeout, which is cancelled once the response headers arrive; the consumer needs an idle timeout of its own
+|===
+
+== Going Further
+
+[.lead]
+* xref:guide-rest-client.adoc[Testing a failing REST dependency]
+* xref:guide-database.adoc[Testing a failing database]
+* xref:guide-streamed-responses.adoc[Testing streamed responses]
+* xref:targets.adoc[Targets Reference]

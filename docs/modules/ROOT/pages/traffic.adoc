@@ -1,0 +1,128 @@
+= Counting Calls
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+Every target records what went through its proxy, for assertions on how the application behaved.
+
+== Overview
+
+The proxy follows the plaintext HTTP/1.x requests the application sends, so a target can answer "how many requests were made", even for requests a fault never relayed:
+
+[source,java]
+----
+Target api = faults.target(InventoryClient.class);
+long before = api.traffic().httpRequestsSeen();
+try (ActiveFault fault = api.diesMidRequest(onNextWrite())) {
+    when()
+            .post("/orders/retrying?item=count")
+            .then()
+            .statusCode(503);
+}
+// one attempt plus eight retries
+assertEquals(9, api.traffic().httpRequestsSeen() - before);
+for (HttpRequestRecord r : api.traffic().httpRequests()) {
+    System.out.println(r.method() + " " + r.target());
+}
+----
+
+This is the assertion that turns "the retry annotation is there" into "the retry annotation did what I think": attempts made, attempts skipped by an open breaker, calls a cache should have absorbed.
+
+== The Traffic of a Target
+
+`target.traffic()` returns a `TargetTraffic`:
+
+[cols="2,5",options="header"]
+|===
+|Method |What it answers
+
+|`connections()`
+|Connections open right now
+
+|`connectionsSeen()`
+|Connections accepted since the application started
+
+|`httpRequestsSeen()`
+|Plaintext HTTP/1.x requests sent through the proxy since the application started
+
+|`httpRequests()`
+|The most recent plaintext HTTP/1.x requests, oldest first; only the last 500 are kept
+
+|`awaitConnections(n, timeout)`
+|Waits until at least `n` connections are open, for a test that needs a pool to have been created
+
+|`awaitHeldConnections(n, timeout)`
+|Waits until at least `n` connections are held by a fault: under `hangs(onNextWrite())`, the pooled connections a request is using; see xref:guide-pool-exhaustion.adoc[Pool exhaustion]
+|===
+
+Each `HttpRequestRecord` says when the request was sent, on which connection, the method and target of its request line (the path with its query string), its headers, a SHA-256 fingerprint of its body, and how long the response took to start:
+
+[cols="2,5",options="header"]
+|===
+|Field |What it holds
+
+|`headers()`, `header(name)`
+|The request headers in the order sent, a repeated header keeping every value; `header` finds one ignoring case
+
+|`bodyFingerprint()`
+|The SHA-256 of the body as hex, or null for a request without one
+
+|`responseTime()`
+|From the request line to the status line of the response, or null when a fault answered the request or it is still in flight
+|===
+
+== The Shape of a Retry
+
+A retry policy has a shape: attempts are spaced out, the spacing varies, and every attempt carries the same idempotency key and the same body, or the dependency cannot tell a retry from a new request.
+`Attempts`, in the `quarkus-network-faults-junit` module, asserts the shape over the records of one call and never an exact duration, which does not survive a slow build machine:
+
+[source,java]
+----
+Attempts attempts = Attempts.last(api.traffic().httpRequests(), 9);
+attempts.assertSameBody()                               // the body did not change between retries
+        .assertGapsAtLeast(Duration.ofMillis(200))      // @Retry(delay = 250) kept them apart
+        .assertSameHeader("Idempotency-Key");           // every attempt carried the same key
+----
+
+`gaps()` returns the time between consecutive attempts for assertions of your own, and `assertGapsVary(tolerance)` checks that a policy adds jitter.
+`Stopwatch.millis(call)` times a call, for the lower bound that proves a timeout, and not something quicker, ended it.
+
+TIP: The counters run since the application started. Read the counter before the fault and assert on the difference.
+
+== The Traffic of One Method
+
+An xref:faults.adoc#some-requests[endpoint] has a `traffic()` too, a `Traffic` with the two request methods above, which counts only the requests it covers:
+
+[source,java]
+----
+Traffic reserve = faults.target(InventoryClient::reserve).traffic();
+long before = reserve.httpRequestsSeen();
+when()
+        .post("/orders/retrying?item=count")
+        .then()
+        .statusCode(503);
+assertEquals(9, reserve.httpRequestsSeen() - before);
+----
+
+`httpRequestsSeen()` counts the covered requests since the application started, whenever the endpoint was named.
+`httpRequests()` picks the covered ones out of the 500 most recent requests of the target.
+
+== How Requests Are Counted
+
+Requests are followed message by message, each to the end of its body.
+A request is counted once, at its request line, however it is split or pipelined, and a body is never read for request lines.
+
+Requests are counted whether or not they were relayed, so retries and the calls an open circuit breaker swallowed are both visible: the first as requests, the second as their absence.
+
+== Limitations
+
+* Only unencrypted HTTP/1.x is visible; TLS and HTTP/2 are opaque
+* A request sent during `hangs()` is counted when the hang ends
+* Database protocols are not parsed; `traffic().connectionsSeen()` is what you get there
+
+== Going Further
+
+[.lead]
+* xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]
+* xref:guide-langchain4j.adoc[Testing Quarkus LangChain4j models], where a request is a prompt
+* xref:faults.adoc[Faults Reference]

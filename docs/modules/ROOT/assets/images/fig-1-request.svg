@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="d" viewBox="0 0 920 360" role="img" aria-label="A configured URL is rewritten by the interceptor to a loopback proxy port; the REST Client connects to the ProxyTarget, which relays to the real service; the test applies faults to the target.">
+<rect width="920" height="360" fill="#FFFFFF"/>
+<style>
+.d{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-size:12px;fill:#1C2733}
+.d .t{font-weight:600;font-size:12.5px}
+.d .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}
+.d .lbl{font-size:11px;fill:#5D6B7A}
+.d .box{fill:#FFFFFF;stroke:#1C2733;stroke-width:1.2}
+.d .box.acc{stroke:#2F6FC2;stroke-width:2;fill:#DCE8F7}
+.d .bound{fill:none;stroke:#5D6B7A;stroke-width:1;stroke-dasharray:5 4}
+.d .ln{fill:none;stroke:#1C2733;stroke-width:1.2}
+.d .ln.dash{stroke-dasharray:4 3}
+.d .ln.acc{stroke:#2F6FC2;stroke-width:1.6}
+.d .life{stroke:#5D6B7A;stroke-width:1;stroke-dasharray:3 4}
+.d .act{fill:#2F6FC2;opacity:0.35}
+.d .note{fill:#EAF0F6;stroke:#D6DDE5}
+</style>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1C2733"/></marker><marker id="ah-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2F6FC2"/></marker></defs>
+<rect class="bound" x="16" y="16" width="660" height="334" rx="4"/>
+<text class="lbl" x="28" y="38">Application under test, one JVM</text>
+<rect class="box" x="36" y="64" width="260" height="48" rx="3"/>
+<text class="mono" x="166.0" y="84" text-anchor="middle">quarkus.rest-client.inventory.url</text>
+<text class="mono" x="166.0" y="100" text-anchor="middle">= http://inventory:8080</text>
+<line class="ln" x1="296" y1="88" x2="334" y2="88" marker-end="url(#ah)"/>
+<rect class="box" x="336" y="64" width="170" height="48" rx="3"/>
+<text class="t" x="421.0" y="92" text-anchor="middle">NetworkFaultsInterceptor</text>
+<line class="ln" x1="506" y1="88" x2="544" y2="88" marker-end="url(#ah)"/>
+<rect class="box" x="546" y="64" width="114" height="48" rx="3"/>
+<text class="mono" x="603.0" y="92" text-anchor="middle">127.0.0.1:41234</text>
+<polyline class="ln" points="603,112 603,150 126,150 126,194" marker-end="url(#ah)"/>
+<text class="lbl" x="365" y="145" text-anchor="middle">the client is built with the proxied address</text>
+<rect class="box" x="36" y="196" width="180" height="48" rx="3"/>
+<text class="t" x="126.0" y="216" text-anchor="middle">InventoryClient</text>
+<text class="lbl" x="126.0" y="232" text-anchor="middle">REST Client bean</text>
+<line class="ln" x1="216" y1="220" x2="334" y2="220" marker-end="url(#ah)"/>
+<text class="lbl" x="276" y="214" text-anchor="middle">TCP</text>
+<rect class="box acc" x="336" y="196" width="200" height="48" rx="3"/>
+<text class="t" x="436.0" y="216" text-anchor="middle">ProxyTarget</text>
+<text class="mono" x="436.0" y="232" text-anchor="middle">rest-client:inventory</text>
+<line class="ln" x1="536" y1="220" x2="714" y2="220" marker-end="url(#ah)"/>
+<text class="lbl" x="626" y="214" text-anchor="middle">TCP</text>
+<rect class="box" x="716" y="196" width="180" height="48" rx="3"/>
+<text class="t" x="806.0" y="216" text-anchor="middle">Inventory service</text>
+<text class="mono" x="806.0" y="232" text-anchor="middle">inventory:8080</text>
+<rect class="box" x="276" y="290" width="320" height="40" rx="3"/>
+<text class="mono" x="436.0" y="314" text-anchor="middle">faults.target(InventoryClient.class).hangs()</text>
+<line class="ln acc" x1="436" y1="290" x2="436" y2="246" marker-end="url(#ah-acc)"/>
+<text class="lbl" x="446" y="272" text-anchor="start">applies faults, reads traffic</text>
+</svg>

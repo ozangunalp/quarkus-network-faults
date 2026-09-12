@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.quarkiverse.networkfaults</groupId>
+        <artifactId>quarkus-network-faults-parent</artifactId>
+        <version>999-SNAPSHOT</version>
+    </parent>
+    <artifactId>quarkus-network-faults-extensions-parent</artifactId>
+    <name>Quarkus Network Faults - Extensions - Parent</name>
+    <packaging>pom</packaging>
+
+    <modules>
+        <module>datasource-common</module>
+        <module>agroal</module>
+        <module>reactive-datasource</module>
+        <module>rest-client</module>
+        <module>kafka-client</module>
+        <module>messaging-kafka</module>
+        <module>langchain4j</module>
+        <module>fault-tolerance</module>
+        <module>redis</module>
+        <module>graphql-client</module>
+        <module>grpc</module>
+        <module>data-hibernate</module>
+        <module>hibernate-orm</module>
+        <module>mongodb</module>
+    </modules>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- every module is, or belongs to, a Quarkus extension: build steps and recorders need the processor -->
+                <plugin>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <id>default-compile</id>
+                            <configuration>
+                                <annotationProcessorPaths>
+                                    <path>
+                                        <groupId>io.quarkus</groupId>
+                                        <artifactId>quarkus-extension-processor</artifactId>
+                                    </path>
+                                </annotationProcessorPaths>
+                                <annotationProcessorPathsUseDepMgmt>true</annotationProcessorPathsUseDepMgmt>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+                <!-- a runtime module declares this plugin and sets network-faults.requires to the Quarkus extension
+                     whose presence brings it into a build -->
+                <plugin>
+                    <groupId>io.quarkus</groupId>
+                    <artifactId>quarkus-extension-maven-plugin</artifactId>
+                    <version>${quarkus.version}</version>
+                    <executions>
+                        <execution>
+                            <phase>compile</phase>
+                            <goals>
+                                <goal>extension-descriptor</goal>
+                            </goals>
+                            <configuration>
+                                <deployment>${project.groupId}:${project.artifactId}-deployment:${project.version}</deployment>
+                                <dependencyCondition>
+                                    <artifact>${network-faults.requires}</artifact>
+                                </dependencyCondition>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

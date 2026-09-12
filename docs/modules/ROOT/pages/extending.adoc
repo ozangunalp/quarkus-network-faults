@@ -1,0 +1,85 @@
+= Declaring Targets from Another Extension
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+The properties the extension proxies are not hardcoded.
+This page is for extension authors who want the connections of their own extension to become targets.
+
+== Overview
+
+Each supported technology is its own module under `extensions/`, added to the build by Quarkus when the matching extension is present (a `dependencyCondition` on the module, a `conditionalDependencies` entry in core).
+
+Another extension does the same, depending only on `quarkus-network-faults-api` at runtime and `quarkus-network-faults-deployment-spi` at build time.
+Its build steps carry `@BuildSteps(onlyIf = NetworkFaultsEnabled.class)`, from the deployment SPI, so they run only when fault injection is on.
+
+== Declare the Properties
+
+The deployment module produces one `NetworkFaultTargetBuildItem` per address-carrying property:
+
+[source,java]
+----
+@BuildStep
+NetworkFaultTargetBuildItem bootstrapServers() {
+    return new NetworkFaultTargetBuildItem(new TargetDescriptor(
+            "kafka.bootstrap.servers", // <1>
+            KafkaBootstrapRewriter.class, // <2>
+            TargetName.of("kafka", "{host}", "{port}"))); // <3>
+}
+----
+
+<1> The property, literal: the extension knows its clients.
+<2> How the value carries its addresses.
+<3> One target per address in the value.
+
+An address the application leaves to an annotation, such as `@RegisterRestClient(baseUri = ...)`, has no property to rewrite.
+The deployment module produces a `NetworkFaultDefaultValueBuildItem` with the property the client would read and the annotation's value; it is served from a low-ordinal configuration source, so it takes the same path as a configured one.
+
+== Rewrite the Value
+
+The rewriter says how the value carries its addresses and rebuilds it pointing at proxies.
+
+Core ships `UrlRewriter` for a single `http(s)://` URL and `HostPortListRewriter` for a `+host[:port],...+` list; extend the latter to name the port an entry without one means, which is all the `KafkaBootstrapRewriter` of the Kafka module does.
+
+Anything else, a JDBC URL, a reactive client URL, is an `AddressRewriter` of the extension's own, built on the parsing helpers in `AddressUtil`.
+Nothing about a connection string lives in core.
+
+The rewriter asks its `Context` for the proxy of each `Upstream` it finds.
+An upstream made with `Upstream.http(host, port)` speaks plaintext HTTP/1.x, so its requests are counted and the HTTP faults apply to it; one made with `Upstream.of(host, port)` is relayed opaquely, which is what `UrlRewriter` decides from the scheme.
+An address split across properties, such as a gRPC client's `host` and `port`, reads the other property with `Context.neighbour(property)`.
+
+== Name the Targets
+
+Prefer literal properties, produced from whatever build items the extension already has for its connections (the agroal, REST Client and LangChain4j modules do that).
+
+Where a property is only known by shape, `+{x}+` placeholders match one segment each and substitute into the name, as `+mp.messaging.outgoing.{channel}.bootstrap.servers+` does.
+
+A registry name is `+TargetName.of(family, segments...)+`.
+`+{host}+` and `+{port}+` are filled in from each address in the value, which is how a list of brokers becomes one target per broker, as in the example above; without them a second address under the same name gets a `+#2+` suffix, which is what the Redis module does with the hosts of one client.
+
+NOTE: A literal property wins over templates that need placeholders to match it, which is how the REST Client module gives the three config keys of a client one target name.
+
+Values are rewritten the same way as the built-in ones, and the targets show up in `targetNames()` and the Dev UI under the name template.
+
+== Resolve the Beans
+
+The extension also maps the beans the application uses to the targets with a `BeanTargetResolver`, which it provides as a CDI bean.
+Given the types and qualifiers of the bean (`TargetBean`), it returns the name of the target, so `faults.target(RedisDataSource.class, new RedisClientName.Literal("cache"))` works.
+A resolver whose beans send HTTP requests can also describe the requests one method sends, as `TargetRequests`, so that a method reference such as `faults.target(InventoryClient::reserve)` works; `RestClientTargets.Resolver` reads them from the `@GET` and `@Path` of the method.
+
+A resolver that needs nothing beyond the bean it is asked about is a `@Singleton` class; `AgroalTargets.Resolver` and `RestClientTargets.Resolver` are the models.
+One that needs facts only the build knows, such as which datasource a persistence unit uses, is a synthetic bean its recorder creates with those facts; `PersistenceUnitTargets.Resolver` is the model.
+
+IMPORTANT: The runtime module needs a `META-INF/beans.xml`, empty is enough, for a resolver class to be discovered as a bean.
+
+TIP: A module follows one Quarkus extension exactly and depends on its real types, so it never has to check whether a class is present.
+
+== Undo the Consequences
+
+An extension that owns state a fault leaves behind, such as a connection pool or a circuit breaker, provides a `ConsequenceCleaner` as a CDI bean.
+Every cleaner bean runs when a fault ends and on `NetworkFaults.resetAll()`.
+
+== Going Further
+
+[.lead]
+* xref:targets.adoc[Targets Reference]
