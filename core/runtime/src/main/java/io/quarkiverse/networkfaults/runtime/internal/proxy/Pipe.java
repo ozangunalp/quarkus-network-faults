@@ -38,6 +38,8 @@ public final class Pipe {
     private long delayedBytes;
     private long lastReleaseNanos;
     private boolean holding;
+    private int pendingWrites;
+    private Runnable whenDrained;
 
     Pipe(ProxyConnection connection, Direction direction, NetSocket source, NetSocket sink) {
         this.connection = connection;
@@ -130,6 +132,7 @@ public final class Pipe {
             scheduleDrain(head.releaseAtNanos() - now);
         }
         resumeIfDrained();
+        finishIfDrained();
     }
 
     private void writeNow(Buffer data, Runnable onWritten) {
@@ -137,12 +140,15 @@ public final class Pipe {
             return;
         }
         int size = data.length();
+        pendingWrites++;
         sink.write(data).onComplete(ar -> {
+            pendingWrites--;
             if (ar.succeeded()) {
                 connection.recordBytes(direction, size);
                 if (onWritten != null) {
                     onWritten.run();
                 }
+                finishIfDrained();
             } else {
                 connection.closeBoth("write to " + (direction == Direction.UPSTREAM ? "upstream" : "client")
                         + " failed: " + ar.cause());
@@ -167,6 +173,24 @@ public final class Pipe {
     public void release() {
         holding = false;
         resumeIfDrained();
+        finishIfDrained();
+    }
+
+    /**
+     * The source closed normally. Finish only after delayed bytes and outstanding writes have reached the sink.
+     * A hanging fault must release its held tail first, so it can still hold a response whose upstream has closed.
+     */
+    void finish(Runnable action) {
+        whenDrained = action;
+        finishIfDrained();
+    }
+
+    private void finishIfDrained() {
+        if (whenDrained != null && !holding && delayed.isEmpty() && pendingWrites == 0 && !connection.isClosed()) {
+            Runnable action = whenDrained;
+            whenDrained = null;
+            action.run();
+        }
     }
 
     public boolean isHolding() {
@@ -174,6 +198,7 @@ public final class Pipe {
     }
 
     void drop() {
+        whenDrained = null;
         delayed.clear();
         delayedBytes = 0;
         if (drainTimer != null) {

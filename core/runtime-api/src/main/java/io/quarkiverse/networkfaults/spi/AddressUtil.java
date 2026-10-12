@@ -88,12 +88,20 @@ public final class AddressUtil {
         }
         boolean http = HTTP_SCHEMES.contains(uri.getScheme().toLowerCase());
         int proxyPort = context.proxyPort(new Upstream(uri.getHost(), port, http));
-        try {
-            return new URI(uri.getScheme(), uri.getUserInfo(), PROXY_HOST, proxyPort, uri.getPath(), uri.getQuery(),
-                    uri.getFragment()).toString();
-        } catch (URISyntaxException e) {
-            return null;
+        // Only the address changes. Decoding the other components and passing them to a URI constructor
+        // would turn escaped delimiters such as %2F and %26 into path separators and query parameters.
+        StringBuilder rewritten = new StringBuilder(uri.getScheme()).append("://");
+        if (uri.getRawUserInfo() != null) {
+            rewritten.append(uri.getRawUserInfo()).append('@');
         }
+        rewritten.append(PROXY_HOST).append(':').append(proxyPort).append(uri.getRawPath());
+        if (uri.getRawQuery() != null) {
+            rewritten.append('?').append(uri.getRawQuery());
+        }
+        if (uri.getRawFragment() != null) {
+            rewritten.append('#').append(uri.getRawFragment());
+        }
+        return rewritten.toString();
     }
 
     /**

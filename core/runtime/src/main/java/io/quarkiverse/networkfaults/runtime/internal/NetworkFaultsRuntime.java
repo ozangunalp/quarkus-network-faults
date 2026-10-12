@@ -98,13 +98,13 @@ public final class NetworkFaultsRuntime {
             }
             String rewritten = match.rewriter().rewrite(value, context);
             if (rewritten == null) {
-                LOG.warnf("network faults: cannot proxy %s=%s (unsupported form); leaving it untouched",
-                        match.property(), value);
+                LOG.warnf("network faults: cannot proxy %s (unsupported form); leaving it untouched", match.property());
                 rewritten = value;
             } else if (rewritten.equals(value)) {
                 LOG.debugf("network faults: %s already points at a proxy", match.property());
             } else {
-                LOG.infof("network faults: %s now points at %s (was %s)", match.property(), rewritten, value);
+                // Endpoint values can carry credentials in user info, query strings or driver-specific options.
+                LOG.infof("network faults: %s now points at a proxy", match.property());
             }
             REWRITES.put(key, rewritten);
             return rewritten;
