@@ -104,6 +104,18 @@ class TargetCatalogTest {
     }
 
     @Test
+    void urlRewritingPreservesEncodedComponents() {
+        UrlRewriter urls = new UrlRewriter();
+        String suffix = "/files/a%2Fb/%252F/%E2%82%AC?token=x%26y%3Dz&space=a+b#part%23two";
+        assertEquals("https://user%3Aname:pass%40word@127.0.0.1:40000" + suffix,
+                rewrite(urls, "https://user%3Aname:pass%40word@inventory:8443" + suffix));
+        assertEquals(List.of("inventory:8443"), seen);
+        assertEquals("http://127.0.0.1:40000?#", rewrite(urls, "http://inventory?#"));
+        assertEquals("http://127.0.0.1:40000/a%2fb", rewrite(urls, "http://[::1]:8080/a%2fb"));
+        assertEquals(List.of("[::1]:8080"), seen);
+    }
+
+    @Test
     void hostPortLists() {
         BrokerListRewriter brokers = new BrokerListRewriter();
         assertEquals("127.0.0.1:40000,127.0.0.1:40001", rewrite(brokers, "kafka-1:9092, kafka-2:9093"));
