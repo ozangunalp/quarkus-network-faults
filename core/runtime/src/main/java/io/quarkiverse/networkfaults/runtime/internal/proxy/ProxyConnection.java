@@ -24,6 +24,7 @@ public final class ProxyConnection {
     private long bytesDownstream;
     private long lastActivityMillis = System.currentTimeMillis();
     private boolean closed;
+    private boolean upstreamClosed;
     private NetSocket backend;
     private Pipe toUpstream;
     private Pipe toClient;
@@ -118,7 +119,7 @@ public final class ProxyConnection {
                     toUpstream = new Pipe(this, Direction.UPSTREAM, frontend, backend);
                     toClient = new Pipe(this, Direction.DOWNSTREAM, backend, frontend);
                     frontend.handler(buf -> {
-                        if (!closed) {
+                        if (!closed && !upstreamClosed) {
                             toUpstream.onData(buf);
                         }
                     });
@@ -127,7 +128,10 @@ public final class ProxyConnection {
                             toClient.onData(buf);
                         }
                     });
-                    backend.closeHandler(v -> closeBoth("upstream closed"));
+                    backend.closeHandler(v -> upstreamClosed());
+                    // A close can precede unread buffers while the source is paused. Only endHandler means
+                    // that every response buffer has reached the pipe, whose delayed writes must then drain.
+                    backend.endHandler(v -> toClient.finish(() -> closeBoth("upstream closed")));
                     backend.exceptionHandler(t -> closeBoth("upstream error: " + t));
                     frontend.drainHandler(v -> toClient.onSinkWritabilityChanged());
                     backend.drainHandler(v -> toUpstream.onSinkWritabilityChanged());
@@ -144,6 +148,15 @@ public final class ProxyConnection {
                         backend.resume();
                     }
                 });
+    }
+
+    private void upstreamClosed() {
+        if (closed) {
+            return;
+        }
+        upstreamClosed = true;
+        frontend.pause();
+        toUpstream.drop();
     }
 
     /**

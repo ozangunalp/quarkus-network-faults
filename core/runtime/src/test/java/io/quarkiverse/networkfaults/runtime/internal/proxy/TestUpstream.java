@@ -48,6 +48,16 @@ public final class TestUpstream implements AutoCloseable {
     }
 
     /**
+     * Answers the first data received, then closes normally once the response has been written.
+     */
+    public static TestUpstream answeringAndClosing(byte[] answer) {
+        return new TestUpstream(socket -> socket.handler(request -> {
+            socket.pause();
+            socket.write(Buffer.buffer(answer)).onSuccess(v -> socket.close());
+        }));
+    }
+
+    /**
      * Writes the fixed payloads to every connection it accepts, one write at a time 100 ms apart, then holds the
      * connection open.
      */
