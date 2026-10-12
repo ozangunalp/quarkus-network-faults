@@ -1,5 +1,6 @@
 package io.quarkiverse.networkfaults.langchain4j.runtime.internal;
 
+import java.util.List;
 import java.util.Map;
 
 import io.quarkus.runtime.RuntimeValue;
@@ -17,5 +18,14 @@ public class AiModelTargetsRecorder {
     public RuntimeValue<AiModelTargets.Resolver> resolver(Map<String, Map<String, String>> modelProviders,
             Map<String, String> aiServiceChatModels) {
         return new RuntimeValue<>(new AiModelTargets.Resolver(modelProviders, aiServiceChatModels));
+    }
+
+    /**
+     * The resolver of the store beans, made with the store extensions the build found present.
+     */
+    @StaticInit
+    public RuntimeValue<StoreTargets.Resolver> storeResolver(StoreTargets.MemoryStore memoryStore,
+            List<StoreTargets.EmbeddingStoreKind> embeddingStores) {
+        return new RuntimeValue<>(new StoreTargets.Resolver(memoryStore, embeddingStores));
     }
 }

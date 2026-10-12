@@ -36,7 +36,7 @@ class OrderResourceTest {
 
 Read the [documentation](https://docs.quarkiverse.io/quarkus-network-faults/dev/index.html): a
 quick start, guides for a failing REST dependency, a failing database, SmallRye Fault Tolerance,
-streamed responses and Quarkus LangChain4j models, and the reference for the faults, the targets
+streamed responses, Quarkus LangChain4j models and MCP servers, and the reference for the faults, the targets
 and the timeout defaults these tests tend to surface. The sources are in `docs/modules/ROOT/pages`.
 
 ## Requirements
@@ -59,7 +59,11 @@ test addresses one by the bean the application injects:
 - gRPC clients by stub or service type plus `GrpcClient.Literal.of(name)`.
 - Kafka, by emitter or client bean; the bootstrap connection only, see below.
 - Quarkus LangChain4j models, `target(ChatModel.class, ModelName.Literal.of(name))`, and the
-  AI services that use them; exercised against OpenAI, Ollama and Anthropic.
+  AI services that use them; exercised against OpenAI, Ollama and Anthropic. The chat memory
+  store and the embedding stores, `target(ChatMemoryStore.class)` and
+  `target(EmbeddingStore.class)`, resolved to the Redis, MongoDB or datasource client behind
+  them, Chroma by its own URL. MCP servers, `target(McpClient.class, McpClientName.Literal.of(name))`,
+  over the streamable HTTP transport.
 - Hibernate ORM and Hibernate Reactive persistence units, `target(EntityManager.class)` or
   `target(Mutiny.SessionFactory.class)`, and Quarkus Data or Jakarta Data repositories, all
   resolved to the datasource behind them.

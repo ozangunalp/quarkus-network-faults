@@ -19,6 +19,7 @@
         <module>kafka-client</module>
         <module>messaging-kafka</module>
         <module>langchain4j</module>
+        <module>langchain4j-mcp</module>
         <module>fault-tolerance</module>
         <module>redis</module>
         <module>graphql-client</module>
