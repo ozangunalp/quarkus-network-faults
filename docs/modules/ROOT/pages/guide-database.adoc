@@ -3,16 +3,15 @@
 include::./includes/attributes.adoc[]
 include::./includes/customization.adoc[]
 
-A database that fails in the middle of a request is where data gets lost or duplicated, and a database that hangs is where requests pile up.
-Both are hard to produce on demand without a proxy in front of the database.
+A database fault test should check both the response to the caller and the data left behind.
+A failed HTTP response alone does not tell you whether a write committed.
+A hanging query also needs a different timeout from a request waiting to acquire a pooled connection.
 
 This guide shows how to test a request when:
 
 * The database dies mid-transaction
 * The database hangs
 * Pooled connections were killed
-
-Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
 
 == Prerequisites
 
@@ -23,9 +22,42 @@ A named datasource takes its qualifier, a reactive pool is `faults.target(Pool.c
 
 TIP: Dev Services work unchanged. The address of the database they start is configuration too, so it is proxied like any other.
 
+=== Sample Application and Configuration
+
+The sample uses PostgreSQL.
+`POST /orders` reserves an item through a REST dependency, then inserts an order inside a transaction.
+`GET /orders/count` returns the number of persisted orders.
+A database exception produces `500` in this application; use your own API's expected error response in your tests.
+
+The timeout and recovery examples depend on these settings:
+
+[source,properties]
+----
+quarkus.datasource.jdbc.acquisition-timeout=PT2S
+quarkus.datasource.jdbc.foreground-validation-interval=PT0.001S
+quarkus.datasource.jdbc.additional-jdbc-properties.socketTimeout=2
+quarkus.datasource.jdbc.additional-jdbc-properties.connectTimeout=2
+----
+
+The PostgreSQL driver properties above are in seconds.
+`PT2S` is two seconds and `PT0.001S` is one millisecond.
+
+[cols="1,2",options="header"]
+|===
+|Setting |What it controls
+|`acquisition-timeout` |Waiting for a pooled connection to become available.
+|`socketTimeout` |Waiting for a response over an established database connection.
+|`connectTimeout` |Establishing a TCP connection to the database.
+|`foreground-validation-interval` |How often Agroal validates a connection before handing it to a caller.
+|===
+
+The acquisition timeout does not bound a query that already owns a connection.
+See xref:guide-pool-exhaustion.adoc[Testing Pool Exhaustion] for a test that keeps those waits separate.
+
 == The Database Dies Mid-Transaction
 
-`diesMidRequest()` resets the connection as soon as the database starts to answer:
+The test first creates an order successfully, establishing a healthy baseline and warming the connection pool.
+It then applies `diesMidRequest()`, which resets a connection when the database starts to answer, and checks that the failed request did not increase the persisted order count:
 
 [source,java]
 ----
@@ -49,52 +81,65 @@ public void databaseDiesMidRequestRollsBack() {
             .post("/orders?item=f")
             .then()
             .statusCode(201);
+    assertEquals(before + 1, count());
 }
 ----
 
-What this exercises: whether a half-done request leaves data behind.
-The default kills the connection as soon as the database starts to answer, so the statement was sent but its result never arrived, which is the case people get wrong.
+The test's `count()` helper reads the number through the application's endpoint:
+
+[source,java]
+----
+private long count() {
+    return Long.parseLong(when().get("/orders/count")
+            .then().statusCode(200).extract().asString());
+}
+----
+
+Read the sequence as four checks: a healthy write succeeds, a faulted request fails, no additional order persists, and a new write succeeds after cleanup.
+The unchanged count verifies that this scenario left no additional order committed.
+It does not, by itself, show how far the transaction progressed before the connection failed.
+
+NOTE: The proxy relays the database protocol as opaque bytes. It does not identify SQL statements or transaction commit boundaries. The first database response can belong to connection validation or another protocol exchange, so this test does not prove the failure occurred at a particular SQL statement.
 
 == The Database Hangs
 
-`hangs()` keeps the connection open and relays nothing:
+`hangs()` keeps connections open but stops relaying traffic.
+Warm the pool before the fault so the test includes the handling of an existing pooled connection:
 
 [source,java]
 ----
+when().get("/orders/count").then().statusCode(200);
+
 try (ActiveFault f = faults.target(DataSource.class).hangs()) {
-    long ms = timed(() -> when()
+    long ms = Stopwatch.millis(() -> when()
             .get("/orders/count")
             .then()
             .statusCode(500));
-    assertTrue(ms < 6_500,
+    assertTrue(ms >= 1_500 && ms < 6_500,
             "socketTimeout=2 should bound the failure, took " + ms + "ms");
 }
+
+when().get("/orders/count").then().statusCode(200);
 ----
 
-What this exercises: the socket timeout of the JDBC driver.
+The test checks a bounded failure under the sample's driver timeouts and verifies recovery after the fault.
+It uses `Stopwatch` from the extension's JUnit module.
 
-[IMPORTANT]
-.PostgreSQL has no socket timeout by default
-====
-The PostgreSQL driver defaults to no socket timeout, so a hung database hangs the request for ever.
-The sample sets one:
+In this sample, Agroal first validates the pooled connection and then tries a replacement after validation fails.
+Both operations can wait on the hung database, so the whole HTTP request can take longer than one two-second socket timeout.
+The broad bounds accommodate that sequence and scheduling delays.
 
-[source,properties]
-----
-quarkus.datasource.jdbc.additional-jdbc-properties.socketTimeout=2
-----
-====
-
-Expect two bounded waits, not one: Agroal validates the pooled connection (one timeout), then opens a replacement whose handshake hangs (another).
-
-NOTE: The Agroal acquisition timeout defaults to 5 seconds and only bounds waiting for a pooled connection, not a hung query.
+IMPORTANT: Configure driver timeouts explicitly. A pool acquisition timeout cannot rescue a query that is already using a connection, and connection establishment may also involve driver-specific login or handshake timeouts.
 
 == Pooled Connections Were Killed
 
-`dropConnections()` resets every live connection once, which is what a database restart looks like to the pool:
+`dropConnections()` resets every live connection once; it does not keep blocking new ones.
+Warm the pool first, invalidate its connections, then verify that a subsequent request can obtain a replacement:
 
 [source,java]
 ----
+when().post("/orders?item=warm").then().statusCode(201);
+
 faults.target(DataSource.class).dropConnections();
 
 // the pool notices and replaces the dead connection
@@ -107,13 +152,15 @@ when()
 What this exercises: connection validation.
 
 [IMPORTANT]
-.Agroal does not validate on borrow by default
+.Foreground validation makes this recovery predictable
 ====
-Agroal only validates idle connections when `quarkus.datasource.jdbc.foreground-validation-interval` is set.
-Without it, the first request after a database restart gets a dead connection and fails; the sample sets it to `PT0.001S`, which is why the snippet above answers `200` at once.
+The sample sets `quarkus.datasource.jdbc.foreground-validation-interval=PT0.001S`, so Agroal checks eligible pooled connections before reuse and replaces the dead ones.
+Without foreground validation, a request can receive a stale connection and fail before the pool replaces it.
+Adapt the assertion to the recovery behavior your application is designed to provide.
 ====
 
-The reactive pool behaves differently: it is always reading its sockets, so it evicts dead connections immediately.
+The sample's reactive pool observes closed sockets and evicts them without a foreground validation query.
+That behavior is covered separately in `OrderScenariosTest`; do not assume JDBC and reactive pools have identical recovery paths.
 
 == Going Further
 

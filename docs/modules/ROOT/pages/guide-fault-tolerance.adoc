@@ -3,19 +3,36 @@
 include::./includes/attributes.adoc[]
 include::./includes/customization.adoc[]
 
-Network faults are the natural input for `quarkus-smallrye-fault-tolerance` annotations, because they exercise the real client code paths instead of mocking an exception.
+Fault tolerance annotations describe how a service should respond to a failed dependency.
+Network fault tests check that behavior through the real client: how long the caller waits, how many requests are attempted, and what the application returns.
 
 This guide shows how to:
 
 * Pick the fault that exercises each annotation
 * End a fault while a request is in flight, to test a `@Retry`
-* Avoid the two surprises a `@Retry` holds
-
-Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
+* Check the retry budget and the time spent waiting
 
 == Prerequisites
 
 The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
+The sample's `POST /orders/retrying` endpoint calls `InventoryService.reserveWithRetry`:
+
+[source,java]
+----
+@Retry(maxRetries = 8, delay = 250, jitter = 0)
+public String reserveWithRetry(String item) {
+    return client.reserve(item);
+}
+----
+
+Here, `client` is the injected `InventoryClient` REST Client.
+This method allows nine attempts: the initial call plus eight retries, with 250 ms between retries and no jitter.
+It has no `@Timeout`; the sample configures a two-second client read timeout.
+The ordinary `/orders` endpoint uses a different method with `@Timeout(1000)`, `@CircuitBreaker`, and `@Fallback`.
+Do not assume those annotations also apply to the retry method.
+
+Successful order requests return `201`; failures return `503` in this application.
+Use your API's expected responses when adapting the examples.
 
 == Which Fault for Which Annotation
 
@@ -25,62 +42,65 @@ The test class uses the `NetworkFaultsProfile` test profile and injects `Network
 
 |`@Timeout`
 |`hangs()`, `slow(d)` with `d` above the timeout
-|The response arrives within the timeout, not the read timeout of the client
+|The caller gets the expected failure or fallback within a bound around the application timeout, with scheduling slack. Use a longer client read timeout to distinguish the two.
 
 |`@Fallback`
-|Any
+|A failure covered by the fallback policy
 |The fallback response; use the `Throwable` parameter of the fallback method to record the cause
 
 |`@CircuitBreaker`
-|`unavailable()` repeated `requestVolumeThreshold` times
-|The breaker opens (`CircuitBreakerOpenException`), and is closed again after the fault ends because the extension resets breakers
+|`unavailable()` across enough calls to satisfy the configured volume threshold and failure ratio
+|A later call reports `CircuitBreakerOpenException`. After the fault ends, a fresh call succeeds because the extension resets the breaker.
 
 |`@Retry`
 |`diesMidRequest(onNextWrite())` or `unavailable()`, ended while the request is running
 |Retries absorb a fault that clears within the retry window; a fault that outlasts them fails
 |===
 
-NOTE: The extension resets every circuit breaker when a fault ends and after each test, so a breaker opened by one test never fails the next.
+NOTE: The extension resets circuit breakers when a fault ends and after each test. Recovery after that reset tests cleanup; it does not test the breaker's natural delay or half-open transition. Keep the fault active and drive the relevant calls if you want to test that transition.
+
+IMPORTANT: An application timeout may interrupt a thread without stopping the underlying client operation. Verify the caller's elapsed time and configure client timeouts as well; xref:guide-langchain4j.adoc[the LangChain4j guide] shows this distinction for blocking model calls.
 
 == Ending a Fault While a Request Is in Flight
 
-The retry case needs a fault that clears while the request is still retrying.
-`ActiveFault.end()` does that from the test thread:
+Start one application request on another thread so the test thread can observe its retries.
+Wait until the proxy has seen at least three attempts, then end the fault while the retry budget still has room.
+Observe attempts rather than sleeping for a guessed duration.
+This snippet needs a test method that declares `throws Exception`:
 
 [source,java]
 ----
 Target api = faults.target(InventoryClient.class);
 long before = api.traffic().httpRequestsSeen();
-ActiveFault fault = api.diesMidRequest(onNextWrite()); // <1>
-CompletableFuture<Integer> status = CompletableFuture.supplyAsync( // <2>
-        () -> when()
-                .post("/orders/retrying?item=retry")
-                .then()
-                .extract()
-                .statusCode());
-// the proxy sees every attempt before it resets it:
-// let a few fail, then clear the fault
-await().atMost(5, TimeUnit.SECONDS) // <3>
-        .until(() -> api.traffic().httpRequestsSeen() >= before + 3);
-fault.end(); // <4>
-assertEquals(201, status.get(10, TimeUnit.SECONDS));
+try (ActiveFault fault = api.diesMidRequest(onNextWrite())) { // <1>
+    CompletableFuture<Integer> status = CompletableFuture.supplyAsync( // <2>
+            () -> when().post("/orders/retrying?item=retry")
+                    .then().extract().statusCode());
+    await().atMost(5, TimeUnit.SECONDS) // <3>
+            .until(() -> api.traffic().httpRequestsSeen() >= before + 3);
+    fault.end(); // <4>
+    assertEquals(201, (int) status.get(10, TimeUnit.SECONDS));
+}
 ----
 
 <1> Every attempt is reset before it reaches the upstream.
 <2> The request runs on another thread while the test watches.
-<3> The proxy counts each attempt, so the test knows when a few have failed.
-<4> The next retry reaches the inventory service and the request succeeds.
+<3> At least three attempts have reached the proxy. No unrelated calls to this target should run during the assertion.
+<4> A subsequent retry can reach the healthy upstream and complete the original application request.
+
+The try-with-resources block also ends the fault if an assertion fails.
+Using `onNextWrite()` lets the proxy count HTTP attempts before resetting them; a refused TCP connection under `unavailable()` sends no HTTP request for the counter to see.
 
 == What `@Retry` Does Not Do
 
-TIP: `@Retry` adds 200 ms of jitter to its delay by default. Set `jitter = 0` on methods whose tests assert on elapsed time.
+TIP: The sample explicitly sets `jitter = 0` so the 250 ms retry delay has a predictable lower bound. If you intentionally use jitter, assert an acceptable range or distribution rather than exact spacing.
 
-CAUTION: `@Retry` does not fix a hang. Without a `@Timeout`, every retry pays the full read timeout of the client, so the total wait multiplies rather than shrinks.
+CAUTION: A retry starts after an attempt fails. If an attempt hangs until the client's read timeout, that wait is paid again on each retry, in addition to retry delays. Set a per-attempt timeout and an overall request budget appropriate to your application.
 
 == Counting the Attempts
 
-A retry annotation that is present is not a retry annotation that does what you think.
-The proxy counts the requests that were really sent, which turns the difference into an assertion:
+Keep the fault active for the whole request to exhaust the retry budget.
+Take a counter baseline before the request, because the target may have handled calls in earlier tests:
 
 [source,java]
 ----
@@ -98,13 +118,17 @@ assertEquals(9, api.traffic().httpRequestsSeen() - before);
 Attempts.last(api.traffic().httpRequests(), 9).assertSameBody().assertGapsAtLeast(Duration.ofMillis(200));
 ----
 
-See xref:traffic.adoc[Counting Calls] for what is counted, and for the shape of a retry a test can assert.
+The count of nine follows from this sample's `maxRetries = 8`; it is not an extension default.
+`Attempts.last(..., 9)` selects the records for this call, `assertSameBody()` checks that retrying did not change the payload, and `assertGapsAtLeast(...)` checks a lower bound on the retry spacing.
+The 200 ms bound allows slack below the configured 250 ms delay.
+See xref:traffic.adoc[Counting Calls] for request records and other retry assertions.
 
 == Fail Open or Fail Closed
 
-When the inventory service cannot be reached, the sample answers `503 inventory unavailable` and takes no order: it fails closed.
-A shop that can backorder might fail open instead and take the order anyway, and a concert ticket site cannot, since a seat that is not there cannot be refunded into existence.
-Which is right is a business decision, not a library setting, and the same fault tests either one:
+A fallback needs an explicit business outcome.
+In this sample, an unavailable inventory service causes the application to reject the order with `503`: it fails closed.
+An application designed to accept a backorder could return `201` and record it for later processing: it fails open.
+Choose the expected behavior first, then assert both the response and the resulting stored state:
 
 [source,java]
 ----
@@ -116,7 +140,8 @@ try (ActiveFault f = faults.target(InventoryClient.class).unavailable()) {
 }
 ----
 
-A fallback that fails open should be tested with `respondsWith(500)` and `hangs()` as well as `unavailable()`: a dependency that answers slowly or wrongly is the case a fallback most often gets wrong.
+The snippet checks the response only. Add a database assertion to verify that an order was rejected or recorded as a backorder.
+Exercise `http().respondsWith(500)` and `hangs()` as well as `unavailable()`, because an HTTP error and a timeout can reach the fallback through different exception paths.
 
 == Going Further
 

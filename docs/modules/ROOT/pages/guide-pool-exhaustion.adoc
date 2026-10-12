@@ -3,56 +3,90 @@
 include::./includes/attributes.adoc[]
 include::./includes/customization.adoc[]
 
-Most outages of a distributed system are a resource pool running out: connections, threads, memory.
-A dependency that hangs is the usual cause, since every call to it holds a connection and a thread until a timeout ends it.
+A connection pool has a limit on how many database connections it can provide.
+If every connection is busy waiting for a hung database, the next request must wait for one to become available.
+The pool's *acquisition timeout* limits that wait.
 
-This guide shows how to test what the application does when a pool is exhausted, in a way that is repeatable.
+This guide tests two questions:
+
+* Does a request fail within a bounded time when every connection is busy?
+* Can a request that does not use that pool still succeed?
+
+The main example uses a pool with two connections.
+Two requests occupy those connections; a third request should fail after the pool's one-second acquisition timeout.
+A separate example tests a pool that cannot open new connections.
 
 == Prerequisites
 
-The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
-Both snippets are taken from `PoolExhaustionTest` in `integration-tests/rest-client-and-datasource`.
-The sample application has two datasources: the default one, with `max-size=4` and `acquisition-timeout=PT2S`, and `audit`, with a pool of two, an acquisition timeout of one second and database timeouts of ten, so that a failure after about a second can only have come from the pool.
+Use the `NetworkFaultsProfile` test profile and inject `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
 
-== A Pool That Cannot Grow
+The sample application provides these endpoints:
 
-The simplest case needs no concurrency.
-Drop the pooled connections so nothing idle is left, then let connection attempts hang: the pool cannot grow, and the next request waits for the pool's acquisition timeout rather than for the database.
+[cols="1,2",options="header"]
+|===
+|Endpoint |Purpose
+|`/audit/count` |Runs a query using the named `audit` datasource.
+|`/audit/slow-count` |Uses the same datasource, but runs a query with `pg_sleep(0.5)` to keep a connection busy during setup.
+|`/orders/price` |Calls a REST dependency and does not use the `audit` pool.
+|`/orders/count` |Runs a query using the default datasource, used in the second example.
+|===
 
-[source,java]
+== Fill the Pool with Blocked Requests
+
+=== Configure Timeouts You Can Tell Apart
+
+The `audit` datasource uses PostgreSQL and the following settings:
+
+[source,properties]
 ----
-Target database = faults.target(DataSource.class);
-database.dropConnections();
-try (ActiveFault f = database.connectTimeout()) {
-    long ms = Stopwatch.millis(() -> when()
-            .get("/orders/count")
-            .then()
-            .statusCode(500));
-    // acquisition-timeout=PT2S bounds the wait; nothing reached the proxy
-    assertTrue(ms >= 1_500 && ms < 4_000);
-    assertEquals(0, database.traffic().connections());
-}
+quarkus.datasource."audit".db-kind=postgresql
+quarkus.datasource."audit".jdbc.max-size=2
+quarkus.datasource."audit".jdbc.acquisition-timeout=PT1S
+quarkus.datasource."audit".jdbc.additional-jdbc-properties.socketTimeout=10
+quarkus.datasource."audit".jdbc.additional-jdbc-properties.connectTimeout=10
 ----
 
-What this exercises: that the acquisition timeout is set, and set shorter than the time a request may take.
-With the Agroal default of five seconds and the REST Client defaults of fifteen and thirty, an exhausted pool shows up to callers as a slow application, not a failing one.
+`PT1S` means one second; the PostgreSQL driver's timeout properties above are in seconds.
 
-NOTE: `connectTimeout()` is available on Linux only. See xref:faults.adoc#connection-faults[Faults].
+[cols="1,2",options="header"]
+|===
+|Setting |Role in this test
+|Pool size: 2 |Two concurrent requests can occupy every connection.
+|Acquisition timeout: 1 second |The third request gives up waiting for a free connection.
+|Driver timeouts: 10 seconds |The first two requests remain blocked long enough to test the third request.
+|===
 
-== A Pool Filled by a Hung Dependency
+Keeping these timeouts far apart makes the result easier to interpret.
+If acquiring a connection and waiting for the database both time out after one second, elapsed time alone cannot tell you which timeout ended the request.
 
-The second case is the bulkhead test: with the dependency hung, as many requests as the pool has connections are in flight, and the question is what happens to the next one, and to requests that do not need the pool at all.
+=== Establish Both Connections Before Applying the Fault
 
-The part that makes such a test flaky is knowing when the pool is full.
-A fixed sleep guesses; the proxy knows.
-`hangs(onNextWrite())` holds a connection the moment the application writes on it, so a held connection is a pooled connection a request is using, and `awaitHeldConnections` waits for that:
+A pool with `max-size=2` does not necessarily have two connections open already.
+Create them by sending two overlapping requests to `/audit/slow-count`, then wait for both requests to finish successfully.
+At that point, the pool has two established connections available for the test.
+
+This setup matters because opening a new connection involves a database handshake.
+If the fault hangs that handshake, the test can end up measuring connection creation instead of waiting for a busy connection to become free.
+Do not assume that the acquisition timeout also bounds every step of connection creation; configure the driver's connection and login timeouts for that case.
+See xref:timeouts.adoc[Client Timeout Defaults].
+
+=== Block Two Requests, Then Send a Third
+
+Apply `hangs(onNextWrite())` after the warm-up.
+The fault holds each connection when the application next writes to it, so the two `/audit/count` requests occupy the pool while waiting for database communication to continue.
+
+Use the proxy's observations to know when to proceed:
+
+* `awaitConnections(2, ...)` waits for two *open* connections. They may still be idle.
+* `awaitHeldConnections(2, ...)` waits for two connections *held by the fault*. With `hangs(onNextWrite())`, they are being used by the requests you just started.
+
+Send the third request only after both connections are held.
+A fixed sleep cannot reliably establish that condition on a busy build machine.
 
 [source,java]
 ----
 Target audit = faults.target(DataSource.class, new DataSourceLiteral("audit"));
 try (ExecutorService callers = Executors.newFixedThreadPool(2)) {
-    // two overlapping requests make the pool open its second connection, with no fault involved; the fault
-    // comes only once both are done, so both connections are established and idle
     List<Future<Integer>> warmUp = new ArrayList<>();
     for (int i = 0; i < 2; i++) {
         warmUp.add(callers.submit(() -> when().get("/audit/slow-count").andReturn().statusCode()));
@@ -67,49 +101,86 @@ try (ExecutorService callers = Executors.newFixedThreadPool(2)) {
         for (int i = 0; i < 2; i++) {
             held.add(callers.submit(() -> when().get("/audit/count").andReturn().statusCode()));
         }
-        // both pooled connections are busy before the request that should not get one is sent
-        audit.traffic().awaitHeldConnections(2, Duration.ofSeconds(5));
+        audit.traffic().awaitHeldConnections(2, Duration.ofSeconds(5)); // <1>
 
-        // the next request fails on the 1s acquisition timeout, not on the database's 10s
-        long ms = Stopwatch.millis(() -> when().get("/audit/count").then().statusCode(500));
+        long ms = Stopwatch.millis(() -> when()
+                .get("/audit/count").then().statusCode(500)); // <2>
         assertTrue(ms >= 800 && ms < 3_000);
 
-        // a request that needs no audit connection is not held up: the bulkhead holds
-        when().get("/orders/price").then().statusCode(200);
+        when().get("/orders/price").then().statusCode(200); // <3>
 
-        f.end();
-        // the fault gone, the two stuck requests complete at once
+        f.end(); // <4>
         for (Future<Integer> status : held) {
             status.get(5, TimeUnit.SECONDS);
         }
     }
 }
 ----
+<1> Both pool connections are busy before the third request starts.
+<2> The third request cannot obtain a connection. This sample returns `500` after the acquisition timeout; the timing bounds allow slack around the configured one second.
+<3> A request that does not use the exhausted pool still succeeds while the first two requests are blocked.
+<4> End the fault before joining the blocked requests, so they can finish and the executor can shut down.
 
-The executor is a resource like any other: in a try-with-resources it is shut down whichever assertion fails, and every submitted task is read back through its `Future`, so a request that failed inside the executor fails the test instead of disappearing.
+The third request runs on the test thread.
+The executor has only two threads because it is responsible only for the two requests that occupy the pool.
 
-What this exercises: the acquisition timeout again, and whether work that does not need the exhausted pool keeps flowing.
-The two stuck requests end as soon as the fault does, with an error rather than a result: xref:faults.adoc#what-happens-when-a-fault-ends[ending a fault flushes the pool], and a flushed pool closes the connections they were waiting on, which is what a database restart looks like to them.
-The bulkhead assertion is the one worth having: on a server with a bounded worker pool, requests stuck on a database are worker threads gone.
-The two timeouts have to be far enough apart to tell them apart; with the acquisition and socket timeouts both at two seconds, as the default datasource has them, the test could not say which one fired.
+The `500` response is this sample application's error handling.
+In your application, assert the response your API is supposed to return when a connection cannot be acquired.
+Keep timing assertions broad enough for a slow build machine, while still well below the driver timeout.
 
-[IMPORTANT]
-.The pool has to be full of established connections
-====
-The acquisition timeout bounds the wait for a connection *that exists*.
-When the pool is below `max-size`, Agroal creates a connection for the waiting request, and the handshake of that connection is bounded by the driver's own login timeout, which for PostgreSQL defaults to zero; Agroal itself warns that the login timeout should be shorter than the acquisition timeout.
-In our runs, a request for which the pool was creating a connection against a hung handshake did not fail at the acquisition timeout.
-That is why the test fills the `audit` pool before the fault, with two requests whose query takes long enough to overlap, and why `loginTimeout` belongs with the other xref:timeouts.adoc[timeouts you set].
+=== Understand Cleanup and What the Test Proves
 
-The sample spells the named datasource's properties the way Quarkus itself does, `quarkus.datasource."audit".jdbc.max-size`: with Quarkus 4.0.0.Beta1 the unquoted form left the pool on its defaults, which the first version of this test found out the hard way.
-====
+Ending a fault restores traffic and runs the extension's cleanup, including flushing the Agroal pool.
+The first two requests may therefore finish with a closed-connection error.
+The final `Future.get(...)` calls check that they finish and surface exceptions from the submitted tasks; they do not assert successful HTTP responses.
+See xref:faults.adoc#what-happens-when-a-fault-ends[What happens when a fault ends].
 
-TIP: Assert on bounds with slack, as above, never on exact durations; a timeout test is only as deterministic as the machine it runs on is idle.
+The resources are nested so that the fault ends before the executor closes, including when an assertion fails.
+Calling `f.end()` explicitly releases the blocked requests before joining them; closing the fault again at the end of the block is safe.
+
+This test demonstrates that waiting for the exhausted pool is bounded and that the independent endpoint still works under these two blocked requests.
+That separation is often called a *bulkhead*: a failure affecting one resource should leave other work able to run.
+It does not establish how much concurrent load the application can tolerate.
+For example, enough blocked database requests could also consume a shared worker pool; testing that requires a separate load scenario.
+
+== Test a Pool That Cannot Open New Connections
+
+A pool can also fail to serve a request because it has no usable connections and cannot create replacements.
+This case needs only one request.
+
+The default datasource in the sample has `max-size=4`, `acquisition-timeout=PT2S`, and PostgreSQL connect and socket timeouts of two seconds.
+It also enables foreground validation with `quarkus.datasource.jdbc.foreground-validation-interval=PT0.001S`, so Agroal detects the connections reset by `dropConnections()` when it tries to reuse them.
+
+[source,java]
+----
+Target database = faults.target(DataSource.class);
+when().get("/orders/count").then().statusCode(200);
+
+database.dropConnections(); // invalidate existing pooled connections
+try (ActiveFault f = database.connectTimeout()) { // block replacement connections
+    long ms = Stopwatch.millis(() -> when()
+            .get("/orders/count").then().statusCode(500));
+    assertTrue(ms >= 1_500 && ms < 4_000);
+    assertEquals(0, database.traffic().connections());
+}
+
+when().get("/orders/count").then().statusCode(200);
+----
+
+`dropConnections()` resets the existing connections once.
+`connectTimeout()` then causes new TCP connection attempts to time out, leaving the pool without a usable connection for the request.
+After the fault ends, the final request checks that the pool can recover.
+
+This sample checks a bounded failure around its configured two-second timeouts.
+Because the acquisition and driver connect timeouts are both two seconds, this example's elapsed time alone does not identify which timeout fired.
+Use the first example when you need to distinguish pool exhaustion from a driver timeout.
+
+NOTE: `connectTimeout()` is available on Linux only. The source test uses `@EnabledOnOs(OS.LINUX)`. See xref:faults.adoc#connection-faults[Faults].
 
 == Going Further
 
 [.lead]
 * xref:faults.adoc[Faults Reference]
-* xref:traffic.adoc[Counting Calls], for `awaitConnections`
-* xref:timeouts.adoc[Client Timeout Defaults], for the defaults that make an exhausted pool look slow
-* xref:guide-database.adoc[Testing a failing database]
+* xref:traffic.adoc[Counting Calls], for `awaitConnections` and `awaitHeldConnections`
+* xref:timeouts.adoc[Client Timeout Defaults]
+* xref:guide-database.adoc[Testing a Failing Database]

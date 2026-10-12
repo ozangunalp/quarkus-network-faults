@@ -106,5 +106,5 @@ Other clients have defaults of their own:
 [.lead]
 * xref:guide-rest-client.adoc[Testing a failing REST dependency]
 * xref:guide-database.adoc[Testing a failing database]
-* xref:guide-streamed-responses.adoc[Testing streamed responses]
+* xref:guide-rest-client.adoc#streamed-responses[Testing streamed responses]
 * xref:targets.adoc[Targets Reference]
