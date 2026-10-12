@@ -1,9 +1,11 @@
 = Testing a Failing REST Dependency
+:page-aliases: guide-streamed-responses.adoc
 
 include::./includes/attributes.adoc[]
 include::./includes/customization.adoc[]
 
-A REST dependency fails in more ways than one, and each way exercises a different part of the calling code: the fallback, the timeout annotation, the timeouts of the client, the handling of an error status.
+A failed connection, an HTTP error response, and a request that never completes need different tests.
+This guide shows which fault to use and what the resulting assertion tells you about the application.
 
 This guide shows how to test a request when the REST service it depends on:
 
@@ -11,14 +13,41 @@ This guide shows how to test a request when the REST service it depends on:
 * Answers with an error status
 * Hangs
 * Cannot be reached
-
-Every snippet is taken from a passing test in `integration-tests/rest-client-and-datasource`, some shortened.
+* Ends a stream early or stops producing events
 
 == Prerequisites
 
 The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
 
 The samples address the client by its interface, `faults.target(InventoryClient.class)`.
+The local `InventoryServer` test resource provides the upstream service.
+The sample application's `/orders` endpoint calls that service and returns `503 inventory unavailable` when its fallback runs; a healthy call creates an order and returns `201`.
+These status codes belong to the sample application. Assert your own API's expected failure and recovery responses.
+
+=== Choose a Scenario
+
+[cols="1,2,2",options="header"]
+|===
+|Dependency behavior |Fault |Main assertion
+|Refuses connections |`unavailable()` |The application returns its failure or fallback response, then recovers when the fault ends.
+|Returns an HTTP error |`http().respondsWith(429)` |The client sees the chosen status, headers, and body.
+|Accepts a connection but stops communicating |`hangs()` |The configured timeout bounds the caller's wait.
+|New connections cannot complete |`connectTimeout()` |A fresh connection attempt fails within the intended bound. Linux only.
+|Only one operation fails |`target(InventoryClient::reserve).hangs()` |Other operations on the dependency still work.
+|A stream fails after delivering data |`diesMidRequest(...)`, `closes(...)`, or `hangs(...)` at an HTTP moment |Partial data, failure handling, and the stream idle timeout. See <<streamed-responses,Streamed Responses>>.
+|===
+
+The ordinary request samples use a one-second `@Timeout` on `InventoryService.reserve`, with these client settings:
+
+[source,properties]
+----
+quarkus.rest-client.inventory.connect-timeout=1000
+quarkus.rest-client.inventory.read-timeout=2000
+----
+
+The client settings are in milliseconds.
+The hanging-request example separates the one-second application timeout from the two-second client read timeout.
+The connect-timeout example has two one-second bounds, so its failure alone does not identify which timeout fired.
 
 == The Dependency Is Down
 
@@ -49,7 +78,18 @@ What this exercises: the `@Fallback` on the call, or, without one, how your exce
 
 `http().respondsWith(status)` answers every request with a synthetic HTTP response instead of relaying it to the upstream, so the REST Client sees the remote API fail with a status of your choosing.
 A body, a content type and headers can be added for the client to read back.
-This snippet and the next call the client directly, so the test sees what the client sees rather than the fallback; the test injects it as `@RestClient Instance<InventoryClient> inventoryClient` and calls `inventoryClient.get()`, so that the client is created inside the test profile:
+The HTTP error examples call the client directly, bypassing `InventoryService` and its fallback.
+Add this field to the test class:
+
+[source,java]
+----
+@Inject
+@RestClient
+Instance<InventoryClient> inventoryClient;
+----
+
+`Instance.get()` obtains the client when the test calls it, inside the active test profile.
+The following code belongs inside a test method:
 
 [source,java]
 ----
@@ -67,14 +107,17 @@ try (ActiveFault f = faults.target(InventoryClient.class)
 }
 ----
 
-What this exercises: how the call handles a `4xx` or `5xx` from the dependency, the `WebApplicationException` the REST Client raises, and any `Retry-After` or error-body handling.
+These assertions verify the error information exposed by the sample client.
+They do not verify that your application retries according to `Retry-After`; add an application-level test if that behavior is required.
+A custom REST Client exception mapper can also change the exception you should expect.
 
 NOTE: The response is synthesised from a plaintext HTTP/1.x request, so this fault applies to `http://` targets only.
 
 === A Failure That Clears
 
 `http().forFirst(n)` selects the first `n` requests, so a fault on that endpoint acts on them and the rest reach the real upstream: the dependency appears to recover.
-That is the transient failure a `@Retry` can ride out:
+The example makes two explicit calls: the first fails and the second succeeds while the fault is still active.
+It demonstrates request selection; xref:guide-fault-tolerance.adoc[the fault tolerance guide] tests automatic retries:
 
 [source,java]
 ----
@@ -91,7 +134,10 @@ try (ActiveFault f = faults.target(InventoryClient.class).http().forFirst(1).htt
 === A Failure in Every Other Call
 
 `http().every(n)` selects one request in `n`, and `http().after(n)` every request after the first `n`.
-Both count requests in the order they arrive, so a test knows which calls fail, and any fault can follow them, `slow(...)` for tail latency as well as `respondsWith`:
+The first request is included in `every(n)`: `every(2)` selects requests 1, 3, 5, and so on.
+`after(1)` lets request 1 through and selects every subsequent request.
+These counters start when the fault is applied and count matching requests across connections.
+You can follow either selector with any endpoint fault, including `slow(...)` for tail latency:
 
 [source,java]
 ----
@@ -106,7 +152,8 @@ What this exercises: a retry budget, or the failure ratio of a circuit breaker, 
 
 === A Response Far Too Large
 
-`bodyOfLength(bytes)` streams a body of that size, so the test sees what the client and the application do with a response far larger than they expect, without the test itself holding it in memory:
+`bodyOfLength(bytes)` generates a synthetic body without allocating that whole body in the proxy.
+The receiving client can still buffer the entire response, as the `String` return type does in this example:
 
 [source,java]
 ----
@@ -116,7 +163,9 @@ try (ActiveFault f = faults.target(InventoryClient.class).http().respondsWith(20
 }
 ----
 
-What this exercises: the unbounded result set, as _Release It!_ calls it: whether anything bounds the size of a response before it is read into memory.
+This assertion demonstrates that the sample client accepts a 20 MB response and buffers it in a `String`.
+It does not demonstrate a response-size limit.
+To test a limit in your application, send a body above that limit and assert that the application rejects it in the intended way.
 
 == The Dependency Hangs
 
@@ -125,7 +174,7 @@ What this exercises: the unbounded result set, as _Release It!_ calls it: whethe
 [source,java]
 ----
 try (ActiveFault f = faults.target(InventoryClient.class).hangs()) {
-    long ms = timed(() -> when()
+    long ms = Stopwatch.millis(() -> when()
             .post("/orders?item=c")
             .then()
             .statusCode(503));
@@ -134,14 +183,11 @@ try (ActiveFault f = faults.target(InventoryClient.class).hangs()) {
 }
 ----
 
-What this exercises: `@Timeout`, and the `read-timeout` of the REST Client.
+The response should arrive around the sample's one-second `@Timeout`, before the two-second client read timeout.
+The lower bound rules out an immediate failure; the upper bound leaves scheduling slack while distinguishing the two timeouts.
+Use `Stopwatch` from the extension's JUnit module and adjust the bounds for your application.
 
-[IMPORTANT]
-.The defaults are long
-====
-The default read timeout is 30 seconds, and the default connect timeout 15 seconds (`RestClientsConfig` on Quarkus main).
-A hung dependency with default settings therefore holds every request for 30 seconds; with a worker-thread endpoint that is 30 seconds of a worker thread per request.
-====
+IMPORTANT: Set explicit client timeouts even when the service uses `@Timeout`. Cancellation behavior depends on the client; see xref:guide-langchain4j.adoc[the LangChain4j guide] for a blocking call that continues waiting after interruption.
 
 == The Dependency Cannot Be Reached
 
@@ -158,15 +204,210 @@ try (ActiveFault f = faults.target(InventoryClient.class).connectTimeout()) {
 }
 ----
 
-What this exercises: `connect-timeout`, which is separate from the read timeout.
+This exercises a failure during connection establishment.
+In this sample, both the client connect timeout and `@Timeout` are one second, so `503` alone cannot prove that the client connect timeout fired.
+To test that timeout specifically, call the client directly or make the competing application timeout longer, and assert elapsed time and the failure cause.
 
 TIP: Pooled connections keep working during this fault, so drop them first if the test needs a new one.
 
 NOTE: `connectTimeout()` is available on Linux only. See xref:faults.adoc#connection-faults[Faults].
 
+[#streamed-responses]
+== Streamed Responses
+
+A stream can deliver valid data before it fails.
+Test both parts of that outcome: which items the application received and how it reports that the rest never arrived.
+This section distinguishes a reset, a clean early close, and a connection that stays open but stops delivering data.
+
+The examples show how to:
+
+* Cut a stream after its headers or after a number of Server-Sent Events
+* Stall a stream after a number of events
+* Bound a stream that goes quiet
+
+The snippets are taken from `StockStreamTest` in `integration-tests/rest-client-and-datasource`, some shortened.
+
+=== Sample Stream
+
+The examples use static imports of `afterHeaders`, `afterChunks`, and `afterSseEvents` from `io.quarkiverse.networkfaults.Moment.Http`.
+
+The local inventory stub sends three Server-Sent Events, containing `1`, `2`, and `3`, in a chunked HTTP/1.1 response.
+The application's `/stock/updates` endpoint consumes that stream and returns `200` with `1,2,3` when it completes.
+On failure, the endpoint returns `502` with the exception name and the items received so far.
+These responses are the sample's policy for partial data; adapt the assertions to your consumer's policy.
+
+[cols="1,2,2",options="header"]
+|===
+|Fault after event 1 |Connection behavior |Expected sample result
+|`diesMidRequest(afterSseEvents(1))` |TCP reset |`502`, with `after [1]` in the response.
+|`closes(afterSseEvents(1))` |Clean close before the HTTP chunked body is complete |`502`, with `HttpClosedException after [1]`.
+|`hangs(afterSseEvents(1))` |Connection stays open, but no more events arrive |`502` after the application's idle timeout, with `after [1]`.
+|===
+
+All three tests should also check that the complete stream can be read again after the fault ends.
+
+=== A Moment in the Response
+
+A streamed response is bytes to the proxy like any other, so `slow()`, `hangs()` and the advanced faults shape a stream as they do a plain response.
+
+What makes a test of a _partial_ stream precise is a `Moment`: `diesMidRequest(moment)` resets the connection there, and `hangs(moment)` holds it there.
+The moments that read an HTTP response are grouped under `Moment.Http`:
+
+[cols="1,3",options="header"]
+|===
+|Moment |Where the fault strikes
+
+|`afterHeaders()`
+|After the status line and the headers, before any of the body
+
+|`afterChunks(n)`
+|After `n` chunks of a chunked HTTP/1.1 body, on the chunk boundary
+
+|`afterSseEvents(n)`
+|After `n` Server-Sent Events of a `text/event-stream` response, right after the blank line that ends the last one
+|===
+
+NOTE: These moments inspect plaintext HTTP/1.x. Use an `http://` test endpoint. An `https://` target cannot be inspected through TLS and rejects HTTP-aware moments; HTTP/2 streams are relayed opaquely.
+
+An HTTP chunk is a transport unit, not necessarily an application event. The sample happens to put one event in each chunk, but use `afterSseEvents(n)` when the number of delivered events is what the test cares about.
+
+See xref:faults.adoc#moments[Faults] for every moment and how each is counted.
+
+=== The Application under Test
+
+The REST Client consumes a Server-Sent Events stream through `Multi<String>`:
+
+[source,java]
+----
+@GET
+@Path("/stock-updates")
+@Produces(MediaType.SERVER_SENT_EVENTS)
+@RestStreamElementType(MediaType.TEXT_PLAIN)
+Multi<String> stockUpdates();
+----
+
+The resource collects what it receives and, when the stream fails, answers with what had arrived before it did:
+
+[source,java]
+----
+@GET
+@Path("/updates")
+public Uni<Response> updates() {
+    List<String> received = new CopyOnWriteArrayList<>();
+    return inventory.stockUpdates()
+            .ifNoItem().after(Duration.ofSeconds(3)).fail() // <1>
+            .onItem().invoke(received::add)
+            .collect().asList()
+            .map(all -> Response.ok(String.join(",", all)).build())
+            .onFailure().recoverWithItem(t -> Response.status(502) // <2>
+                    .entity(t.getClass().getSimpleName() + " after " + received)
+                    .build());
+}
+----
+
+<1> Fail if no item arrives for three seconds, including the wait for the first item. Each new item restarts the idle wait; this is not a maximum duration for the entire stream.
+<2> Preserve the items already received and return the sample's chosen error response.
+
+The sample collects the stream before answering its own caller. It is not forwarding a streaming HTTP response to that caller. If your resource forwards items immediately, test what that caller sees when its response has already started.
+
+=== Cut the Stream
+
+`diesMidRequest(afterSseEvents(1))` relays the first event and resets the connection:
+
+[source,java]
+----
+@Test
+public void streamCutAfterTheFirstEvent() {
+    try (ActiveFault f = faults.target(InventoryClient.class)
+            .diesMidRequest(afterSseEvents(1))) {
+        when()
+                .get("/stock/updates")
+                .then()
+                .statusCode(502)
+                .body(containsString(" after [1]"));
+    }
+
+    when()
+            .get("/stock/updates")
+            .then()
+            .statusCode(200)
+            .body(is("1,2,3"));
+}
+----
+
+With `afterHeaders()` the connection is reset before any event, and the answer is `after []`.
+
+NOTE: A reset mid-stream fails the `Multi`. The events already delivered are kept only if the application collected them; the sample answers `502` naming what had arrived, which is the decision every consumer of a stream has to make for a stream that fails half-way.
+
+=== End the Stream Early
+
+`closes(afterSseEvents(1))` relays the first event and then sends a clean end of the TCP stream.
+A clean TCP close does not necessarily mean a complete HTTP response:
+
+[source,java]
+----
+@Test
+public void streamEndsCleanlyAfterTheFirstEvent() {
+    try (ActiveFault f = faults.target(InventoryClient.class)
+            .closes(afterSseEvents(1))) {
+        when()
+                .get("/stock/updates")
+                .then()
+                .statusCode(502)
+                .body(is("HttpClosedException after [1]"));
+    }
+
+    when().get("/stock/updates").then().statusCode(200).body(is("1,2,3"));
+}
+----
+
+The stream is chunked, so the client knows the terminating chunk never came and fails the `Multi` with a closed connection, where `diesMidRequest` gives it a reset.
+A response of unknown length, neither `Content-Length` nor chunked, is complete when the connection closes, and a client cannot tell a truncated one from a whole one; that is the case to test with `closes` on such an endpoint.
+
+=== Stall the Stream
+
+`hangs(afterSseEvents(1))` relays the first event, then the connection goes quiet:
+
+[source,java]
+----
+@Test
+public void streamStallsAfterTheFirstEvent() {
+    try (ActiveFault f = faults.target(InventoryClient.class)
+            .hangs(afterSseEvents(1))) {
+        long ms = Stopwatch.millis(() -> when()
+                .get("/stock/updates")
+                .then()
+                .statusCode(502)
+                .body(containsString(" after [1]")));
+        assertTrue(ms >= 2_900 && ms < 6_000);
+    }
+
+    when()
+            .get("/stock/updates")
+            .then()
+            .statusCode(200)
+            .body(is("1,2,3"));
+}
+----
+
+The timing assertion checks that the three-second idle timeout ended the stall, with slack for scheduling.
+`Stopwatch` is provided by the extension's JUnit module.
+
+[IMPORTANT]
+.The read timeout does not bound a stalled stream
+====
+The sample configures a two-second REST Client `read-timeout`, but that timeout is cancelled when the response headers arrive.
+The integration test therefore observes the application's three-second idle timeout when the stream stalls after its first event.
+
+Put `ifNoItem().after(...).fail()` on the consumer's `Multi` when silence between items must be bounded.
+Verify this behavior for your client and transport, rather than assuming a request timeout also bounds the lifetime of an already-started stream.
+====
+
 == One Method Fails
 
-A method reference names the requests one method of the client sends, so a fault can leave its other methods working, over the same pooled connections:
+A method reference selects the HTTP requests sent by that client method.
+Here, reservation calls hang while stock updates from the same dependency still succeed.
+Method selection requires a plaintext HTTP/1.x target; it cannot inspect requests inside TLS:
 
 [source,java]
 ----
@@ -211,7 +452,8 @@ See xref:faults.adoc#some-requests[Faults on Some Requests] for the faults this 
 
 == Everything Is Down
 
-`faults.all()` is every known target at once:
+`faults.all()` applies the fault to every known target at once.
+The assertion below checks only the order endpoint; add assertions for the other affected endpoints if you need to verify their behavior too:
 
 [source,java]
 ----
@@ -227,7 +469,7 @@ try (ActiveFault f = faults.all().unavailable()) {
 
 [.lead]
 * xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]
-* xref:guide-streamed-responses.adoc[Testing streamed responses]
+* xref:guide-langchain4j.adoc[Testing Quarkus LangChain4j models], for partial and stalled token streams
 * xref:traffic.adoc[Counting the calls that were made]
 * xref:faults.adoc[Faults Reference]
 * xref:timeouts.adoc[Client Timeout Defaults]

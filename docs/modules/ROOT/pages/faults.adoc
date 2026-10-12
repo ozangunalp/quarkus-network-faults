@@ -120,7 +120,7 @@ The responses on a connection are followed message by message:
 * `afterChunks(n)` strikes in a chunked response only; a response that is not chunked is relayed whole
 * `afterSseEvents(n)` counts the events of a `text/event-stream` response, whether or not it is chunked; any other response is relayed whole
 
-They are made for streamed responses; see xref:guide-streamed-responses.adoc[Testing streamed responses].
+They are made for streamed responses; see xref:guide-rest-client.adoc#streamed-responses[Testing streamed responses].
 
 [#http-responses]
 == HTTP Responses
