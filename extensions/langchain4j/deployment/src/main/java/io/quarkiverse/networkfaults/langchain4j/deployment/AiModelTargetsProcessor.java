@@ -1,5 +1,6 @@
 package io.quarkiverse.networkfaults.langchain4j.deployment;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,6 +21,9 @@ import io.quarkiverse.networkfaults.deployment.spi.NetworkFaultsEnabled;
 import io.quarkiverse.networkfaults.langchain4j.runtime.internal.AiModelTargets;
 import io.quarkiverse.networkfaults.langchain4j.runtime.internal.AiModelTargets.Kind;
 import io.quarkiverse.networkfaults.langchain4j.runtime.internal.AiModelTargetsRecorder;
+import io.quarkiverse.networkfaults.langchain4j.runtime.internal.StoreTargets;
+import io.quarkiverse.networkfaults.langchain4j.runtime.internal.StoreTargets.EmbeddingStoreKind;
+import io.quarkiverse.networkfaults.langchain4j.runtime.internal.StoreTargets.MemoryStore;
 import io.quarkiverse.networkfaults.spi.BeanTargetResolver;
 import io.quarkiverse.networkfaults.spi.TargetDescriptor;
 import io.quarkus.arc.deployment.SyntheticBeanBuildItem;
@@ -29,11 +33,12 @@ import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.BuildSteps;
 import io.quarkus.deployment.annotations.ExecutionTime;
 import io.quarkus.deployment.annotations.Record;
+import io.quarkus.deployment.builditem.FeatureBuildItem;
 
 /**
  * One target per model Quarkus LangChain4j selected, and the resolver bean with the facts it needs, from the
  * extension's own build items: which provider serves each model name, and which chat model each declared AI service
- * uses.
+ * uses. The store beans get their own resolver, told which memory and embedding store extensions are present.
  */
 @BuildSteps(onlyIf = NetworkFaultsEnabled.class, onlyIfNot = IsNormal.class)
 class AiModelTargetsProcessor {
@@ -78,12 +83,44 @@ class AiModelTargetsProcessor {
         for (DeclarativeAiServiceBuildItem service : aiServices) {
             String modelName = service.getChatModelName();
             aiServiceChatModels.put(service.getServiceClassInfo().name().toString(),
-                    modelName == null || modelName.isBlank() ? AiModelTargets.DEFAULT_MODEL : modelName);
+                    modelName == null || modelName.isBlank() ? AiModelTargets.DEFAULT_NAME : modelName);
         }
         beans.produce(SyntheticBeanBuildItem.configure(AiModelTargets.Resolver.class)
                 .addType(BeanTargetResolver.class)
                 .scope(Singleton.class)
                 .runtimeValue(recorder.resolver(modelProviders, aiServiceChatModels))
+                .done());
+    }
+
+    /**
+     * The store extensions present, recognised by the features they register, and the Chroma targets when Chroma
+     * is among them.
+     */
+    @BuildStep
+    @Record(ExecutionTime.STATIC_INIT)
+    void stores(List<FeatureBuildItem> features, BuildProducer<NetworkFaultTargetBuildItem> targets,
+            BuildProducer<SyntheticBeanBuildItem> beans, AiModelTargetsRecorder recorder) {
+        MemoryStore memoryStore = null;
+        List<EmbeddingStoreKind> embeddingStores = new ArrayList<>();
+        for (FeatureBuildItem feature : features) {
+            MemoryStore memory = MemoryStore.withFeature(feature.getName());
+            if (memory != null) {
+                memoryStore = memory;
+            }
+            EmbeddingStoreKind embedding = EmbeddingStoreKind.withFeature(feature.getName());
+            if (embedding != null) {
+                embeddingStores.add(embedding);
+            }
+        }
+        if (embeddingStores.contains(EmbeddingStoreKind.CHROMA)) {
+            for (TargetDescriptor descriptor : StoreTargets.chromaDescriptors()) {
+                targets.produce(new NetworkFaultTargetBuildItem(descriptor));
+            }
+        }
+        beans.produce(SyntheticBeanBuildItem.configure(StoreTargets.Resolver.class)
+                .addType(BeanTargetResolver.class)
+                .scope(Singleton.class)
+                .runtimeValue(recorder.storeResolver(memoryStore, embeddingStores))
                 .done());
     }
 

@@ -69,6 +69,12 @@ Pass the type and the qualifiers the application would inject:
 
 |Quarkus LangChain4j model
 |`faults.target(ChatModel.class, ModelName.Literal.of("summarizer"))`, or `faults.target(Summarizer.class)` for the AI service that uses it
+
+|Quarkus LangChain4j store
+|`faults.target(ChatMemoryStore.class)` for the chat memory store, `faults.target(EmbeddingStore.class)` for the default embedding store, with `+EmbeddingStoreName.Literal.of(...)+` for a named one: the client or datasource behind the store, or the store's own URL for Chroma
+
+|Quarkus LangChain4j MCP server
+|`faults.target(McpClient.class, McpClientName.Literal.of("weather"))`
 |===
 
 === By `Instance`
@@ -112,6 +118,12 @@ NOTE: A registry name such as `datasource:<default>:jdbc` cannot be used to sele
 
 |`quarkus.langchain4j.<provider>[.<name>].base-url`
 |`langchain4j:<provider>:<name>`, `<default>` for the unnamed model; `langchain4j:<provider>` is every model of the provider
+
+|`quarkus.langchain4j.chroma[.<store>].url`
+|`langchain4j:chroma:<store>`, `<default>` for the unnamed store
+
+|`quarkus.langchain4j.mcp.<client>.url`
+|`mcp:<client>`, for a client over the streamable HTTP or WebSocket transport; `mcp` is every MCP server
 
 |`quarkus.redis[.<name>].hosts`
 |`redis:<name>`, `+#2+` and up for further hosts of one client; `redis` is every client
@@ -225,7 +237,15 @@ Until then, use the Kafka companion with Toxiproxy for that case.
 A model is addressed by its bean and `@ModelName`, or by the AI service that uses it.
 The registry name `langchain4j:openai` covers every OpenAI model.
 
-See xref:guide-langchain4j.adoc[Testing Quarkus LangChain4j models].
+The chat memory store and the embedding stores resolve to the client behind them: the Redis or MongoDB client of a memory store, the datasource of a pgvector or Oracle store, the Redis client of a Redis store.
+A fault on `ChatMemoryStore.class` is a fault on that client.
+A Chroma store has a target of its own, `langchain4j:chroma:<store>`.
+The Infinispan, Neo4j, Qdrant, Milvus, Weaviate, Pinecone and Hibernate stores are not recognised yet.
+
+An MCP server is addressed by its `McpClient` bean and `@McpClientName`.
+Only a client over the streamable HTTP or WebSocket transport has a target; a client over stdio runs a process and has no connection to fault.
+
+See xref:guide-langchain4j.adoc[Testing Quarkus LangChain4j models], which covers the stores and the xref:guide-langchain4j.adoc#mcp[MCP servers] too.
 
 [#limitations]
 == Limitations

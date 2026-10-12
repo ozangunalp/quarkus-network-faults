@@ -12,6 +12,7 @@ import dev.langchain4j.model.moderation.ModerationModel;
 import dev.langchain4j.model.scoring.ScoringModel;
 import io.quarkiverse.langchain4j.ModelName;
 import io.quarkiverse.langchain4j.RegisterAiService;
+import io.quarkiverse.langchain4j.runtime.NamedConfigUtil;
 import io.quarkiverse.networkfaults.spi.BeanTargetResolver;
 import io.quarkiverse.networkfaults.spi.TargetBean;
 import io.quarkiverse.networkfaults.spi.TargetDescriptor;
@@ -26,7 +27,10 @@ import io.quarkiverse.networkfaults.spi.UrlRewriter;
  */
 public final class AiModelTargets {
 
-    public static final String DEFAULT_MODEL = "<default>";
+    /**
+     * The name Quarkus LangChain4j gives the unnamed model, store or client of a provider.
+     */
+    public static final String DEFAULT_NAME = NamedConfigUtil.DEFAULT_NAME;
 
     public enum Kind {
         CHAT,
@@ -40,16 +44,26 @@ public final class AiModelTargets {
     private AiModelTargets() {
     }
 
+    /**
+     * The target for the {@code base-url} of one model.
+     */
     public static TargetDescriptor descriptor(String provider, String modelName) {
-        boolean defaultModel = DEFAULT_MODEL.equals(modelName);
-        String property = "quarkus.langchain4j." + provider
-                + (defaultModel ? "" : "." + TargetDescriptor.propertySegment(modelName))
-                + ".base-url";
-        return new TargetDescriptor(property, UrlRewriter.class, targetName(provider, modelName));
+        return new TargetDescriptor(property(provider, modelName, "base-url"), UrlRewriter.class,
+                targetName(provider, modelName));
     }
 
-    static TargetName targetName(String provider, String modelName) {
-        return TargetName.of("langchain4j", provider, modelName);
+    /**
+     * A property of one named thing under a provider's prefix, {@code quarkus.langchain4j.<provider>[.<name>].<attribute>}:
+     * a model's {@code base-url}, an embedding store's {@code url} or {@code datasource}.
+     */
+    static String property(String provider, String name, String attribute) {
+        return "quarkus.langchain4j." + provider
+                + (DEFAULT_NAME.equals(name) ? "" : "." + TargetDescriptor.propertySegment(name))
+                + "." + attribute;
+    }
+
+    static TargetName targetName(String provider, String name) {
+        return TargetName.of("langchain4j", provider, name);
     }
 
     /**
@@ -85,7 +99,7 @@ public final class AiModelTargets {
             }
             Optional<ModelName> qualifier = bean.qualifier(ModelName.class);
             String modelName = qualifier.isPresent() && !qualifier.get().value().isBlank() ? qualifier.get().value()
-                    : DEFAULT_MODEL;
+                    : DEFAULT_NAME;
             return Optional.of(model(kind, modelName, bean.toString()));
         }
 

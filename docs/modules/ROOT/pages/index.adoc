@@ -56,7 +56,7 @@ This extension makes the dependency fail on purpose, inside the test JVM.
 
 == What Can You Test?
 
-Any outbound connection the extension recognises in the configuration can be faulted: REST Clients, JDBC and reactive datasources, Redis, MongoDB, GraphQL and gRPC clients, and Quarkus LangChain4j models.
+Any outbound connection the extension recognises in the configuration can be faulted: REST Clients, JDBC and reactive datasources, Redis, MongoDB, GraphQL and gRPC clients, and Quarkus LangChain4j models, stores and MCP servers.
 
 Use it to check:
 
@@ -74,6 +74,9 @@ Use it to check:
 
 [.lead]
 *A model provider that fails* behind a Quarkus LangChain4j AI service, and what each failed prompt costs.
+
+[.lead]
+*An MCP server or a chat memory store that fails* in the middle of a conversation, and what the conversation does then.
 
 [.lead]
 *Retries and circuit breakers*, by counting the requests that were really sent.

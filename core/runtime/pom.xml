@@ -66,6 +66,7 @@
                                 <artifact>${project.groupId}:quarkus-network-faults-kafka-client:${project.version}</artifact>
                                 <artifact>${project.groupId}:quarkus-network-faults-messaging-kafka:${project.version}</artifact>
                                 <artifact>${project.groupId}:quarkus-network-faults-langchain4j:${project.version}</artifact>
+                                <artifact>${project.groupId}:quarkus-network-faults-langchain4j-mcp:${project.version}</artifact>
                                 <artifact>${project.groupId}:quarkus-network-faults-fault-tolerance:${project.version}</artifact>
                                 <artifact>${project.groupId}:quarkus-network-faults-redis:${project.version}</artifact>
                                 <artifact>${project.groupId}:quarkus-network-faults-graphql-client:${project.version}</artifact>

@@ -12,15 +12,17 @@ This guide shows how to:
 * Apply faults to a model provider
 * Count the prompts that were really sent
 * Cut or stall a streamed response
+* Fault the chat memory store and the embedding stores behind an AI service
+* Fault the MCP servers an AI service calls tools on
 
-The snippets are taken from the `integration-tests/langchain4j` module, some shortened.
+The snippets are taken from the `integration-tests/langchain4j` module, some shortened; those of the last two sections from `integration-tests/langchain4j-stores` and `integration-tests/langchain4j-mcp`.
 The module runs every scenario against OpenAI, Ollama and Anthropic, each behind an AI service with `@Timeout`, `@CircuitBreaker` and `@Fallback` on the call, talking to small stubs of the chat APIs of the providers.
 
 == Prerequisites
 
 The test class uses the `NetworkFaultsProfile` test profile and injects `NetworkFaults`, as described in the xref:quickstart.adoc[Quick start].
 
-The support for Quarkus LangChain4j is added to the build automatically when `quarkus-langchain4j-core` is present.
+The support for Quarkus LangChain4j is added to the build automatically when `quarkus-langchain4j-core` is present, and that for MCP clients when `quarkus-langchain4j-mcp` is.
 
 == Addressing a Model
 
@@ -212,6 +214,135 @@ try (ActiveFault f = model.hangs(afterSseEvents(1))) { // <2>
 
 IMPORTANT: `quarkus.langchain4j.timeout` is the read timeout of the REST Client, which does not bound a stalled stream. A model that stops producing tokens is ended only by an idle timeout the consumer of the token stream puts on it. See xref:guide-streamed-responses.adoc[Testing streamed responses].
 
+== Memory and Embedding Stores
+
+The stores an AI service relies on fail like any other dependency, and most of them are a client the extension already proxies: the Redis and MongoDB chat memory stores use a Redis or MongoDB client, the pgvector and Oracle embedding stores a datasource, the Redis embedding store a Redis client.
+Their beans resolve to the target of that client, so a fault on the store is a fault on the client behind it, and a test may address either.
+Chroma is an HTTP API with an address of its own, `quarkus.langchain4j.chroma[.<store>].url`, which becomes the target `langchain4j:chroma:<store>` and takes the HTTP faults a model does.
+
+[cols="2,3",options="header"]
+|===
+|Target |What it is
+
+|`faults.target(ChatMemoryStore.class)`
+|The client of the chat memory store, `redis:<default>` for the Redis store on the default client
+
+|`faults.target(EmbeddingStore.class)`
+|The default embedding store: the datasource behind a pgvector store, `datasource:<default>:jdbc`, the client behind a Redis store
+
+|`faults.target(EmbeddingStore.class, EmbeddingStoreName.Literal.of("c1"))`
+|A named store, `langchain4j:chroma:c1` for a Chroma one
+|===
+
+The memory is read before the prompt is built, so a chat memory store that is down fails the turn before anything reaches the model, and the model's request count shows it:
+
+[source,java]
+----
+Target model = faults.target(ChatModel.class);
+long promptsBefore = model.traffic().httpRequestsSeen();
+try (ActiveFault f = faults.target(ChatMemoryStore.class).unavailable()) {
+    when()
+            .get("/chat/s1?text=hello")
+            .then()
+            .statusCode(503);
+}
+// the memory is read before the model is called: a failed read costs no prompt
+assertEquals(promptsBefore, model.traffic().httpRequestsSeen());
+----
+
+A hung memory store is bounded by the timeout of its client, `quarkus.redis.timeout` for the Redis one; `quarkus.langchain4j.timeout` plays no part.
+
+The `integration-tests/langchain4j-stores` module runs the Redis memory store, a pgvector store and a Chroma store, all from Dev Services, and checks that each store and the client behind it are one target.
+
+NOTE: With several embedding store extensions in one application, a named store belongs to the extension whose configuration names it, and the default store to the extension whose default store is enabled. When that does not single one out, `target` says so; address the datasource or client behind the store then. The Infinispan, Neo4j, Qdrant, Milvus, Weaviate, Pinecone and Hibernate stores are not recognised yet.
+
+[#mcp]
+== MCP Servers
+
+An MCP server is a dependency an AI service calls in the middle of a conversation, when the model asks for a tool.
+It fails like any other HTTP dependency: it is down, it hangs, it answers with an error.
+What differs is where the failure goes.
+LangChain4j hands a failed tool back to the model as the tool's result, so the conversation goes on and costs another prompt, and a hung tool call is bounded by the client's `tool-execution-timeout`, which the model call waits for.
+
+The `integration-tests/langchain4j-mcp` module lists and calls the tools of a small stub of an MCP server through the client bean, over the streamable HTTP transport.
+
+=== Addressing an MCP Server
+
+A client over the streamable HTTP or the WebSocket transport is configured with a URL, and that property is recognised as the target `mcp:<client>`:
+
+[source,properties]
+----
+quarkus.langchain4j.mcp.weather.transport-type=streamable-http
+quarkus.langchain4j.mcp.weather.url=http://localhost:8081/mcp
+----
+
+The server is addressed by its client bean and `@McpClientName`:
+
+[source,java]
+----
+Target server = faults.target(McpClient.class, McpClientName.Literal.of("weather"));
+----
+
+Every MCP client has a name, so `faults.target(McpClient.class)` alone is refused, and so is the name of a client without a URL: a client over stdio runs a process and has no connection to fault.
+
+=== The Server Is Down
+
+[source,java]
+----
+try (ActiveFault f = server.unavailable()) {
+    when()
+            .post("/tools/forecast?city=Athens")
+            .then()
+            .statusCode(503);
+}
+----
+
+The client throws, and the resource answers `503`.
+Behind an AI service the same failure does not reach the caller: LangChain4j reports it to the model as the result of the tool, and the model answers with that in mind.
+Assert on the prompts sent to the model, `traffic().httpRequestsSeen()` on its target, to see what the failed tool cost.
+
+=== The Server Hangs
+
+[source,java]
+----
+try (ActiveFault f = server.hangs()) {
+    long ms = Stopwatch.millis(() -> when()
+            .post("/tools/forecast?city=Athens")
+            .then()
+            .statusCode(503)
+            .body(containsStringIgnoringCase("timeout")));
+    assertTrue(ms >= 1_900, "the tool call must wait for tool-execution-timeout, took " + ms + "ms");
+    assertTrue(ms < 9_000, "tool-execution-timeout must bound the hang, took " + ms + "ms");
+}
+----
+
+A hung tool call ends when `quarkus.langchain4j.mcp.<client>.tool-execution-timeout` expires: `quarkus.langchain4j.timeout` when that is set, 60 seconds otherwise.
+The client does not throw on a timeout.
+It returns an error result that says there was one, which an AI service passes to the model like any other tool error, so a resource that calls the client itself has to look at `isError()`.
+
+=== The Server Answers With an Error
+
+[source,java]
+----
+long before = server.traffic().httpRequestsSeen();
+try (ActiveFault f = server.http().respondsWith(500)) {
+    when()
+            .post("/tools/forecast?city=Athens")
+            .then()
+            .statusCode(503);
+}
+assertEquals(1, server.traffic().httpRequestsSeen() - before);
+----
+
+=== Counting Tool Calls
+
+One tool call is one request, once the client has a session.
+The first use of a client initialises it, two requests over the streamable HTTP transport, so a test that counts warms the client up first, with a `listTools()` for example.
+Two settings keep the count to what the test sends:
+
+* `auto-health-check=false`, or the client pings the server every `auto-health-check-interval`, 60 seconds by default
+* `protocol-version`, or the client probes the server for the newest protocol it supports before it initialises
+
 == Summary
 
 What the tests established, identically for all three providers:
@@ -221,6 +352,8 @@ What the tests established, identically for all three providers:
 * A cut response and a `429` each cost two prompts, because every client retries once
 * An open breaker sends nothing
 * `@Timeout` cannot cut a hung model call; `quarkus.langchain4j.timeout` is the real bound
+* A chat memory store that is down fails the turn before a prompt is sent; a hung one is bounded by its client's timeout
+* An MCP server is addressed by its `McpClient` bean and `@McpClientName`; a hung tool call is bounded by `tool-execution-timeout`, and the client returns an error result rather than throwing
 
 == Going Further
 
