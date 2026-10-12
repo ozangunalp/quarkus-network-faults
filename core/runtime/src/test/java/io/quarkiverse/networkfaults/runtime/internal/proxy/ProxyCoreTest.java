@@ -237,20 +237,19 @@ class ProxyCoreTest {
     @Test
     void diesMidRequestResetsWhenTheResponseEndsExactlyOnTheThreshold() throws Exception {
         // upstream sends exactly the threshold, then nothing more: the reset must fire on that boundary buffer,
-        // not wait for a following one that never comes.
+        // not wait for a following one that never comes. The upstream writes as soon as the connection opens and a
+        // fault counts only the bytes it sees, so the fault is applied before connecting.
         try (TestUpstream up = TestUpstream.scripted(new byte[100])) {
             ProxyTarget t = registry.targetFor(TargetName.of("exact"), Upstream.of("127.0.0.1", up.port()), "test.exact.url");
-            try (Socket s = Sockets.connect(t)) {
-                try (ActiveFault f = api(t).diesMidRequest(afterBytes(100))) {
-                    assertEquals(100, s.getInputStream().readNBytes(100).length);
-                    // pre-fix: no reset is scheduled and the idle upstream sends nothing, so this would time out
-                    IOException e = assertThrows(IOException.class, () -> {
-                        if (s.getInputStream().read() < 0) {
-                            throw new IOException("clean EOF");
-                        }
-                    });
-                    assertTrue(e.getMessage().toLowerCase().contains("reset"), "expected a reset, got: " + e);
-                }
+            try (ActiveFault f = api(t).diesMidRequest(afterBytes(100)); Socket s = Sockets.connect(t)) {
+                assertEquals(100, s.getInputStream().readNBytes(100).length);
+                // pre-fix: no reset is scheduled and the idle upstream sends nothing, so this would time out
+                IOException e = assertThrows(IOException.class, () -> {
+                    if (s.getInputStream().read() < 0) {
+                        throw new IOException("clean EOF");
+                    }
+                });
+                assertTrue(e.getMessage().toLowerCase().contains("reset"), "expected a reset, got: " + e);
             }
         }
     }
