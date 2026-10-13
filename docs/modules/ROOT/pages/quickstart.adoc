@@ -10,16 +10,11 @@ The Java snippets are taken from the `integration-tests/rest-client-and-datasour
 [#install-extension]
 == Install the Extension
 
-Add the extension and its JUnit support to the test dependencies of your application:
+Add `quarkus-network-faults-junit` as a test dependency.
+It provides `NetworkFaultsProfile` and brings in `quarkus-network-faults` transitively, so a single dependency is enough:
 
 [source,xml,subs=attributes+]
 ----
-<dependency>
-    <groupId>io.quarkiverse.networkfaults</groupId>
-    <artifactId>quarkus-network-faults</artifactId>
-    <version>{project-version}</version>
-    <scope>test</scope>
-</dependency>
 <dependency>
     <groupId>io.quarkiverse.networkfaults</groupId>
     <artifactId>quarkus-network-faults-junit</artifactId>
@@ -28,8 +23,8 @@ Add the extension and its JUnit support to the test dependencies of your applica
 </dependency>
 ----
 
-Nothing else is needed.
-The support for each technology, such as the REST Client or Agroal, is added to the build automatically when the matching Quarkus extension is present.
+The core `quarkus-network-faults` extension enables fault injection for all supported integrations already present in your application.
+Support is detected and included automatically when the matching Quarkus extension is present; no integration-specific Network Faults dependencies are needed.
 
 NOTE: Nothing in the extension is active in a production build.
 

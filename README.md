@@ -34,6 +34,12 @@ class OrderResourceTest {
 }
 ```
 
+For this test, add `quarkus-network-faults-junit` as a test dependency. It provides
+`NetworkFaultsProfile` and brings in `quarkus-network-faults` transitively, so a single
+dependency is enough. The extension automatically includes fault injection support for the
+supported integrations already present in your application; no integration-specific Network Faults
+dependencies are needed.
+
 Read the [documentation](https://docs.quarkiverse.io/quarkus-network-faults/dev/index.html): a
 quick start, guides for a failing REST dependency, a failing database, SmallRye Fault Tolerance,
 streamed responses, Quarkus LangChain4j models and MCP servers, and the reference for the faults, the targets
