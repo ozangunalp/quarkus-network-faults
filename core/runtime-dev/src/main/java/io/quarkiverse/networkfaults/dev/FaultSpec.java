@@ -2,8 +2,10 @@ package io.quarkiverse.networkfaults.dev;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import io.quarkiverse.networkfaults.ActiveFault;
 import io.quarkiverse.networkfaults.Endpoint;
@@ -26,7 +28,7 @@ final class FaultSpec {
      * What a fault, parsed from a {@link FaultRequest}, consists of. Fields that do not apply to the kind are null.
      */
     record Parsed(String kind, String scopeMethod, String scopePath, Moment moment, Duration duration, Integer status,
-            String body, String contentType) {
+            String body, String contentType, Map<String, String> headers) {
 
         /**
          * Whether the fault reads the HTTP exchange, so needs a target reached over plaintext HTTP, as the API decides
@@ -97,9 +99,11 @@ final class FaultSpec {
                         "expected \"METHOD /path\", for example \"POST /inventory/reserve\": " + request.requests());
             }
         }
-        if (!kind.equals("responds-with") && (request.body() != null || request.contentType() != null)) {
-            throw new IllegalArgumentException("only responds-with takes a body or a content type: " + spec);
+        if (!kind.equals("responds-with")
+                && (request.body() != null || request.contentType() != null || request.headers() != null)) {
+            throw new IllegalArgumentException("only responds-with takes a body, a content type or headers: " + spec);
         }
+        Map<String, String> headers = parseHeaders(request.headers());
         Moment moment = null;
         Duration duration = null;
         Integer status = null;
@@ -134,7 +138,31 @@ final class FaultSpec {
             default -> throw new IllegalArgumentException("unknown fault '" + kind + "' in '" + spec
                     + "'; expected one of " + examplesSpecs());
         }
-        return new Parsed(kind, scopeMethod, scopePath, moment, duration, status, request.body(), request.contentType());
+        return new Parsed(kind, scopeMethod, scopePath, moment, duration, status, request.body(), request.contentType(),
+                headers);
+    }
+
+    /**
+     * One {@code Name: value} header per line; blank lines are skipped. Empty when there is none.
+     */
+    private static Map<String, String> parseHeaders(String text) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        if (text == null) {
+            return headers;
+        }
+        for (String line : text.split("\\R")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            int colon = line.indexOf(':');
+            String name = colon < 0 ? "" : line.substring(0, colon).trim();
+            if (name.isEmpty() || name.contains(" ")) {
+                throw new IllegalArgumentException(
+                        "expected a \"Name: value\" header per line, for example \"Retry-After: 30\": " + line);
+            }
+            headers.put(name, line.substring(colon + 1).trim());
+        }
+        return headers;
     }
 
     /**
@@ -171,6 +199,9 @@ final class FaultSpec {
                 }
                 if (parsed.body() != null) {
                     response.body(parsed.body());
+                }
+                for (Map.Entry<String, String> header : parsed.headers().entrySet()) {
+                    response.header(header.getKey(), header.getValue());
                 }
                 return response;
             }

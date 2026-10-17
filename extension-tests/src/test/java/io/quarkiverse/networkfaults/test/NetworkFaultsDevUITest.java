@@ -110,7 +110,8 @@ public class NetworkFaultsDevUITest extends DevUIJsonRPCTest {
         assertTrue(report.get("markdown").asText().contains("rest-client:stub"));
 
         // responds-with hands back a response to refine rather than the fault itself; it is recorded from the card too
-        executeJsonRPCMethod("apply", Map.of("target", "rest-client:stub", "fault", "responds-with:503"));
+        executeJsonRPCMethod("apply", Map.of("target", "rest-client:stub", "fault", "responds-with:503",
+                "headers", "Retry-After: 30"));
         JsonNode response = executeJsonRPCMethod("getHistory").get(0);
         assertEquals("card", response.get("source").asText(), response.toString());
         assertEquals("responds-with:503", response.get("spec").asText(), response.toString());

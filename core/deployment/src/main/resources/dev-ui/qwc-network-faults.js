@@ -7,6 +7,7 @@ import '@vaadin/grid';
 import '@vaadin/button';
 import '@vaadin/combo-box';
 import '@vaadin/text-field';
+import '@vaadin/text-area';
 import '@vaadin/details';
 
 /**
@@ -152,7 +153,9 @@ export class QwcNetworkFaults extends LitElement {
                         <vaadin-text-field theme="small" placeholder="Body" .value=${form.body}
                             @value-changed=${e => this._edit(t, 'body', e.detail.value)}></vaadin-text-field>
                         <vaadin-text-field theme="small" placeholder="application/json" title="Content type" .value=${form.contentType}
-                            @value-changed=${e => this._edit(t, 'contentType', e.detail.value)}></vaadin-text-field>` : ''}
+                            @value-changed=${e => this._edit(t, 'contentType', e.detail.value)}></vaadin-text-field>
+                        <vaadin-text-area theme="small" placeholder="Retry-After: 30" title="Response headers, one Name: value per line"
+                            .value=${form.headers} @value-changed=${e => this._edit(t, 'headers', e.detail.value)}></vaadin-text-area>` : ''}
                     <span title=${blocked ? reason : ''}>
                         <vaadin-button theme="small primary" ?disabled=${!form.fault || blocked} @click=${() => this._apply(t)}>Apply</vaadin-button>
                     </span>
@@ -256,7 +259,7 @@ export class QwcNetworkFaults extends LitElement {
     }
 
     _form(t) {
-        return this._forms[t.name] || { fault: this._faults[0]?.spec, requests: '', body: '', contentType: '' };
+        return this._forms[t.name] || { fault: this._faults[0]?.spec, requests: '', body: '', contentType: '', headers: '' };
     }
 
     _edit(t, field, value) {
@@ -271,7 +274,8 @@ export class QwcNetworkFaults extends LitElement {
             fault: form.fault,
             requests: form.requests,
             body: respondsWith ? form.body : '',
-            contentType: respondsWith ? form.contentType : ''
+            contentType: respondsWith ? form.contentType : '',
+            headers: respondsWith ? form.headers : ''
         });
     }
 

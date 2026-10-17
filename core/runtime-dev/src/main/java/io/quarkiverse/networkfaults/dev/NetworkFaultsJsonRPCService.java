@@ -178,9 +178,11 @@ public class NetworkFaultsJsonRPCService {
                     + "HTTP. Not accepted with unavailable or connect-timeout.") String requests,
             @JsonRpcDescription("Optional, empty or omitted for none; responds-with only: the response body.") String body,
             @JsonRpcDescription("Optional, empty or omitted for none; responds-with only: the response content type, "
-                    + "for example application/json.") String contentType) {
+                    + "for example application/json.") String contentType,
+            @JsonRpcDescription("Optional, empty or omitted for none; responds-with only: extra response headers, "
+                    + "one \"Name: value\" per line, for example \"Retry-After: 30\".") String headers) {
         FaultRequest request = new FaultRequest(fault, absentIfBlank(requests), absentIfBlank(body),
-                absentIfBlank(contentType));
+                absentIfBlank(contentType), absentIfBlank(headers));
         FaultSpec.Parsed parsed = FaultSpec.parse(request);
         ActiveFault applied = FaultSpec.apply(parsed, impl().byName(target).replacing());
         history.tag(impl().recordOf(applied), request);

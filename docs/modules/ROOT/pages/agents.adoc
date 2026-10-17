@@ -90,7 +90,7 @@ The tools that change the running application are opt-in: enable them in the Dev
 
 |`apply`
 |Opt-in
-|`apply(target, fault, requests, body, contentType)`: applies a fault to a whole target, or with `requests` such as `POST /inventory/reserve` to those requests only; `body` and `contentType` refine `responds-with`
+|`apply(target, fault, requests, body, contentType, headers)`: applies a fault to a whole target, or with `requests` such as `POST /inventory/reserve` to those requests only; `body`, `contentType` and `headers` (one `Name: value` per line, such as `Retry-After: 30`) refine `responds-with`
 
 |`reset`
 |Opt-in
