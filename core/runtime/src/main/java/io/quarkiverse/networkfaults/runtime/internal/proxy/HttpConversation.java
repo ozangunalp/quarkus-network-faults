@@ -120,8 +120,19 @@ final class HttpConversation {
     HttpExchange takeRequest() {
         HttpExchange answered = awaitingResponse.poll();
         if (answered != null) {
-            connection.target().stats().responseSeen(answered);
+            connection.target().stats().responseSeen(answered, responses.status());
         }
         return answered;
+    }
+
+    /**
+     * A fault answered the oldest request waiting for a response with {@code status} in place of the upstream; the
+     * request's response time is taken now.
+     */
+    void answeredByFault(int status) {
+        HttpExchange answered = awaitingResponse.poll();
+        if (answered != null) {
+            connection.target().stats().responseSeen(answered, status);
+        }
     }
 }

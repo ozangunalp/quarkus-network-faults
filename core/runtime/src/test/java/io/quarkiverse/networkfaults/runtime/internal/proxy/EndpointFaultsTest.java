@@ -399,13 +399,13 @@ class EndpointFaultsTest {
     }
 
     @Test
-    void aRequestWithoutABodyOrAResponseIsRecordedWithout() throws Exception {
+    void aRequestWithoutABodyIsRecordedWithoutAFingerprint() throws Exception {
         try (Socket s = connect(); ActiveFault f = reserve().http().respondsWith(503)) {
             assertEquals("503 ", call(s, "POST", RESERVE));
         }
         HttpRequestRecord r = TestTargets.of(target).traffic().httpRequests().getLast();
         assertNull(r.bodyFingerprint());
-        assertNull(r.responseTime(), "a fault answered it, so no response of the upstream was seen");
+        assertEquals(503, r.responseStatus(), "respondsWith answered it");
     }
 
     private static String sha256(String text) throws Exception {

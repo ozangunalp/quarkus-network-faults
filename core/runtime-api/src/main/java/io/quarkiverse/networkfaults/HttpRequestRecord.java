@@ -18,11 +18,14 @@ import java.util.Map;
  * @param headers the request headers in the order they were sent, a header that is repeated keeping every value
  * @param bodyFingerprint the SHA-256 of the body as a hex string, or null for a request without a body or one whose
  *        body the proxy has not read to the end
- * @param responseTime from the request line to the status line of the response, or null while there is none: the
- *        request was never relayed, answered by a fault, or is still in flight
+ * @param responseTime from the request line to the status line of the response, or null when the request was never
+ *        answered or is still in flight; a response {@code respondsWith} answered with counts
+ * @param responseStatus the status of the response, the one {@code respondsWith} answered with included, or null when
+ *        the request was never answered or is still in flight
  */
 public record HttpRequestRecord(Instant time, long connectionId, String method, String target,
-        Map<String, List<String>> headers, String bodyFingerprint, Duration responseTime) {
+        Map<String, List<String>> headers, String bodyFingerprint, Duration responseTime,
+        Integer responseStatus) {
 
     /**
      * The first value of the header with this name, compared ignoring case, or null when the request has none.

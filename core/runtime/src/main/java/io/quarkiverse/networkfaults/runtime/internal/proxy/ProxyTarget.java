@@ -221,8 +221,8 @@ public final class ProxyTarget {
             if (conflict != null) {
                 return Future.failedFuture(conflict);
             }
-            FaultHandle handle = new FaultHandle(this, next, scope, counter, stats.connectionsSeen, connections.size(),
-                    stats.upstreamConnectFailures);
+            FaultHandle handle = new FaultHandle(this, next, scope, counter, stats.connectionsSeen,
+                    stats.httpRequestsSeen(scope), connections.size(), stats.upstreamConnectFailures);
             faults.add(handle);
             if (!scope.isAll()) {
                 // a fault on some requests acts on their buffers only, never on a connection or the listener
@@ -315,7 +315,9 @@ public final class ProxyTarget {
             stats.log(TargetEvent.Type.FAULT_ENDED, TargetEvent.NO_CONNECTION, handle.describe());
             boolean connectionsSeen = stats.connectionsSeen != handle.startSeen || handle.startLive > 0;
             handle.outcome = new Outcome(handle.scope.isAll() ? connectionsSeen : handle.sawRequest,
-                    stats.upstreamConnectFailures - handle.startUnreachable, stats.lastUpstreamConnectFailure);
+                    stats.upstreamConnectFailures - handle.startUnreachable, stats.lastUpstreamConnectFailure,
+                    stats.connectionsSeen - handle.startSeen,
+                    stats.httpRequestsSeen(handle.scope) - handle.startRequests);
         });
     }
 
@@ -328,13 +330,6 @@ public final class ProxyTarget {
     }
 
     /**
-     * Ends every active fault without going through their handles.
-     */
-    public void reset() {
-        registry.callAsync(() -> endAll(true));
-    }
-
-    /**
      * What a fault saw while it was active, for the no-traffic guard.
      *
      * @param sawTraffic whether what the fault acts on went through the proxy: a connection for a fault on the whole
@@ -342,8 +337,11 @@ public final class ProxyTarget {
      * @param unreachable how many connections the application opened that the proxy could not pass on, because it
      *        could not connect to the upstream
      * @param unreachableBecause why the upstream could not be reached, when {@code unreachable} is not zero
+     * @param connectionsSeen how many connections the target accepted while the fault was active
+     * @param httpRequestsSeen how many requests the fault's scope covers went through while it was active
      */
-    public record Outcome(boolean sawTraffic, long unreachable, String unreachableBecause) {
+    public record Outcome(boolean sawTraffic, long unreachable, String unreachableBecause, long connectionsSeen,
+            long httpRequestsSeen) {
     }
 
     /**
@@ -357,6 +355,7 @@ public final class ProxyTarget {
         // request it covers
         private final RequestCounter counter;
         private final long startSeen;
+        private final long startRequests;
         private final int startLive;
         private final long startUnreachable;
         // on the loop: whether a request the scope covers went through while the fault was active
@@ -365,12 +364,13 @@ public final class ProxyTarget {
         private Outcome outcome;
 
         FaultHandle(ProxyTarget target, Fault fault, RequestScope scope, RequestCounter counter, long startSeen,
-                int startLive, long startUnreachable) {
+                long startRequests, int startLive, long startUnreachable) {
             this.target = target;
             this.fault = fault;
             this.scope = scope;
             this.counter = counter;
             this.startSeen = startSeen;
+            this.startRequests = startRequests;
             this.startLive = startLive;
             this.startUnreachable = startUnreachable;
         }
@@ -477,7 +477,7 @@ public final class ProxyTarget {
                 conns.add(c.snapshot());
             }
             return new TargetSnapshot(name.toString(), upstream.host(), upstream.port(), listener.port(), sourceProperty,
-                    listener.isListening(), activeFaults(), previousFault, stats.connectionsSeen,
+                    upstream.http(), listener.isListening(), activeFaults(), previousFault, stats.connectionsSeen,
                     stats.httpRequestsSeen(RequestScope.ALL), stats.connectionsReset, stats.upstreamConnectFailures,
                     stats.bytesUpstream,
                     stats.bytesDownstream, List.copyOf(conns));

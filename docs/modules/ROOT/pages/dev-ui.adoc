@@ -4,6 +4,9 @@ include::./includes/attributes.adoc[]
 include::./includes/customization.adoc[]
 
 In dev mode, the _Network faults_ card lists every target and applies and ends faults on the running application.
+Each target also shows what its last fault did, and the session can be exported as a Markdown report.
+
+image::dev-ui-card.png[alt="The Network faults page: a row per target with its property, proxy and upstream, active fault, connections and bytes, and under it the fault form, here responds-with:503 with a body and a content type, and the requests the target sent",width=900,align=center]
 
 == Enabling It
 
@@ -16,10 +19,12 @@ Fault injection is build-time configuration, so the card needs the flag in the d
 
 Without it the card says so and shows nothing else.
 With it, every outbound connection the configuration describes is proxied as it is in tests, and the card lists one row per target: its name and the property it came from, the proxy and upstream addresses, the active fault, and its connections and bytes.
+Everything on the card refreshes every two seconds; there is nothing to reload by hand.
 
 == Applying a Fault
 
-Each row has a drop-down of faults and an *Apply* button.
+Under each row are a fault field, a requests field and an *Apply* button.
+The fault field offers every fault with what it does, and takes any other argument typed in, such as `slow:2s`.
 A fault is written as the test API would call it, lower case with dashes, and an argument after a colon:
 
 [cols="2,4",options="header"]
@@ -49,20 +54,56 @@ A fault is written as the test API would call it, lower case with dashes, and an
 
 |`dies-mid-request:sse:3`, `closes:sse:3`, `hangs:sse:3`
 |`Http.afterSseEvents(3)`
+
+|`responds-with:503`
+|`http().respondsWith(503)`; the *Body* and *Content type* fields that appear with it set the body and its content type
 |===
 
-Applying a fault ends whatever fault the target has first, so switching faults is one click; the test API throws instead, see xref:faults.adoc[Faults].
-*End* ends the fault, *End all faults* every fault of every target, and *Drop connections* resets the live connections once.
+The requests field scopes the fault to xref:faults.adoc#some-requests[some requests], as `http().requests(method, path)` does: `POST /inventory/reserve` faults those requests only, and an empty field faults every connection.
+It is not accepted with `unavailable` or `connect-timeout`.
 
-The card applies faults to whole targets: `respondsWith`, the faults under `advanced()` and faults on xref:faults.adoc#some-requests[some requests] are only reachable from the API.
+Applying a fault to a whole target ends whatever fault the target has first, so switching faults is one click; the test API throws instead, see xref:faults.adoc[Faults].
+A fault on some requests ends nothing, so several can be combined, and one that conflicts with an active fault is refused with the reason.
+*End* ends the target's faults, *End all faults* every fault of every target, and *Drop connections* resets the live connections once.
+
+`responds-with`, the `headers`, `chunks` and `sse` moments and the requests field need a target reached over plaintext HTTP.
+For any other target, a datasource or a client configured with an `https://` URL, the card leaves them out, and hovering says why.
+The faults under `advanced()`, latency with jitter, bandwidth and slicing, are only reachable from the API.
 
 == Events
 
-*Events* opens the event log of a target, oldest first: the listener binding and unbinding, faults starting and ending, connections opening, closing and being reset, every HTTP request seen, and upstream connects that failed.
+*Events* opens the event log of a target, newest first: the listener binding and unbinding, faults starting and ending, connections opening, closing and being reset, every HTTP request seen, and upstream connects that failed.
 The log keeps the last 500 events.
+
+== Requests
+
+*Requests* opens the HTTP requests a target sent, oldest first: when, the method, the path and query string, the response status and the response time.
+Clicking a request shows its headers and the SHA-256 of its body.
+A request that was never answered or is still in flight has no status.
+One answered by `respondsWith` carries the status it was answered with.
+This is what `traffic().httpRequests()` returns in a test, see xref:traffic.adoc[Counting Calls], so it is only there for a target reached over plaintext HTTP; for any other, the button is disabled and hovering says why.
+
+== The Last Fault
+
+Once a fault has ended, the _Fault_ column of its target says what it did: _saw n connection(s), m request(s)_, or _no traffic_ when nothing went through the proxy while it was active, which is the dev-mode form of xref:guard.adoc[the guard]: such a fault cannot have affected the application, and the target is probably not the one the request goes through.
+`unavailable` and `connect-timeout` read _not judged_ instead, as the guard exempts them: refused and dropped connections never reach the proxy, so what the application did is the evidence.
+
+Behind the column is a history of every fault applied since the application started, whether from the card, a Dev MCP tool or application code, capped at the last 500; the `getHistory` Dev MCP tool returns it in full.
+
+== Report
+
+*Export report* in the toolbar renders a Markdown report: the targets with their property, upstream and active fault, every fault of the history with whether traffic went through it, and the counters of each target.
+*Copy* puts it on the clipboard and *Download* saves it as `network-faults-report.md`, to paste into an issue, a pull request or an agent conversation.
+
+== Driving the Card from an Agent
+
+Everything the card does is also a Dev MCP tool, so an AI agent can apply faults to the running application, observe what it does, and write the test that pins it down.
+Enabling Dev MCP, the tools that are opt-in, and the resources the agent reads first are described in xref:agents.adoc[AI Agents].
 
 == Going Further
 
 [.lead]
 * xref:faults.adoc[Faults Reference]
 * xref:targets.adoc[Targets Reference]
+* xref:traffic.adoc[Counting Calls]
+* xref:agents.adoc[AI Agents]

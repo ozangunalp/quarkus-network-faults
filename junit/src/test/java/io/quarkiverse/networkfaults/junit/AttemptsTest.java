@@ -19,7 +19,7 @@ class AttemptsTest {
 
     private static HttpRequestRecord attempt(long millisAfterStart, String key, String body) {
         return new HttpRequestRecord(T0.plusMillis(millisAfterStart), 1, "POST", "/reserve",
-                key == null ? Map.of() : Map.of("Idempotency-Key", List.of(key)), body, null);
+                key == null ? Map.of() : Map.of("Idempotency-Key", List.of(key)), body, null, 200);
     }
 
     @Test

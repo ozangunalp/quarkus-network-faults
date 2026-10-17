@@ -11,6 +11,7 @@ public record TargetSnapshot(
         int upstreamPort,
         int proxyPort,
         String sourceProperty,
+        boolean plaintextHttp,
         boolean listening,
         String fault,
         String previousFault,
@@ -21,4 +22,11 @@ public record TargetSnapshot(
         long bytesUpstream,
         long bytesDownstream,
         List<ConnectionSnapshot> connections) {
+
+    /**
+     * The upstream as {@code host:port}.
+     */
+    public String upstream() {
+        return upstreamHost + ":" + upstreamPort;
+    }
 }

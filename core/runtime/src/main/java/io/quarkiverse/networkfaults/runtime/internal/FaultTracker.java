@@ -1,14 +1,17 @@
 package io.quarkiverse.networkfaults.runtime.internal;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.jboss.logging.Logger;
 
 import io.quarkiverse.networkfaults.ActiveFault;
+import io.quarkiverse.networkfaults.runtime.internal.proxy.ProxyTarget;
 import io.quarkiverse.networkfaults.runtime.internal.proxy.ProxyTarget.FaultHandle;
 import io.quarkiverse.networkfaults.runtime.internal.proxy.ProxyTarget.Outcome;
 import io.quarkiverse.networkfaults.spi.ConsequenceCleaner;
@@ -44,6 +47,7 @@ public final class FaultTracker {
     private final List<ConsequenceCleaner> cleaners;
     private final Set<Group> active = new LinkedHashSet<>();
     private final List<String> violations = new ArrayList<>();
+    private final List<FaultListener> listeners = new CopyOnWriteArrayList<>();
 
     public FaultTracker(List<ConsequenceCleaner> cleaners) {
         this.cleaners = cleaners;
@@ -54,9 +58,19 @@ public final class FaultTracker {
      */
     final class Group implements ActiveFault {
         private final List<FaultHandle> members;
+        private final FaultRecord record;
 
         private Group(List<FaultHandle> members) {
             this.members = members;
+            List<String> targets = new ArrayList<>(members.size());
+            for (FaultHandle h : members) {
+                targets.add(h.target().name());
+            }
+            this.record = new FaultRecord(Instant.now(), List.copyOf(targets), members.getFirst().describe());
+        }
+
+        FaultRecord record() {
+            return record;
         }
 
         @Override
@@ -68,9 +82,26 @@ public final class FaultTracker {
         }
     }
 
-    synchronized Group track(List<FaultHandle> handles) {
+    /**
+     * Tells {@code listener} of every fault that starts or ends from now on.
+     */
+    void addListener(FaultListener listener) {
+        listeners.add(listener);
+    }
+
+    Group track(List<FaultHandle> handles) {
         Group group = new Group(handles);
-        active.add(group);
+        // told before the group is active, so a concurrent end cannot reach a listener ahead of the start
+        for (FaultListener listener : listeners) {
+            try {
+                listener.started(group.record);
+            } catch (RuntimeException e) {
+                warn(listener, e);
+            }
+        }
+        synchronized (this) {
+            active.add(group);
+        }
         return group;
     }
 
@@ -120,6 +151,35 @@ public final class FaultTracker {
                 violations.add(verdict);
             }
         }
+        FaultEnd.Verdict verdict = !observable ? FaultEnd.Verdict.NOT_JUDGED
+                : traffic ? FaultEnd.Verdict.SAW_TRAFFIC : FaultEnd.Verdict.NO_TRAFFIC;
+        notifyEnded(group, verdict);
+    }
+
+    /**
+     * Tells the listeners a fault has ended, with what its handles saw while it was active; one listener failing does
+     * not stop the others.
+     */
+    private void notifyEnded(Group group, FaultEnd.Verdict verdict) {
+        long connections = 0;
+        long requests = 0;
+        for (FaultHandle h : group.members) {
+            Outcome outcome = h.outcome();
+            connections += outcome.connectionsSeen();
+            requests += outcome.httpRequestsSeen();
+        }
+        FaultEnd end = new FaultEnd(Instant.now(), verdict, connections, requests);
+        for (FaultListener listener : listeners) {
+            try {
+                listener.ended(group.record, end);
+            } catch (RuntimeException e) {
+                warn(listener, e);
+            }
+        }
+    }
+
+    private static void warn(FaultListener listener, RuntimeException e) {
+        LOG.warnf(e, "network faults: fault listener %s failed", listener.getClass().getName());
     }
 
     /**
@@ -146,6 +206,34 @@ public final class FaultTracker {
         for (Group g : groups) {
             g.end();
         }
+    }
+
+    /**
+     * Ends every fault still active on any of {@code targets}, settling each one. A fault on a composite target ends
+     * as a whole as soon as one of its members is among them.
+     */
+    void endOn(List<ProxyTarget> targets) {
+        List<Group> groups = new ArrayList<>();
+        synchronized (this) {
+            for (Group g : active) {
+                for (FaultHandle h : g.members) {
+                    if (targets.contains(h.target())) {
+                        groups.add(g);
+                        break;
+                    }
+                }
+            }
+        }
+        for (Group g : groups) {
+            g.end();
+        }
+    }
+
+    /**
+     * How many faults are active right now.
+     */
+    synchronized int activeCount() {
+        return active.size();
     }
 
     /**

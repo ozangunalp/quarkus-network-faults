@@ -1,0 +1,162 @@
+= AI Agents
+
+include::./includes/attributes.adoc[]
+include::./includes/customization.adoc[]
+
+An AI coding agent can write fault tests with this extension, and in dev mode it can experiment on the running application first.
+
+== Overview
+
+The extension gives an agent two things:
+
+* A test-writing guide, the one document an agent needs to write a fault test: the test shape, how to address each kind of target, which fault for which scenario, counting calls, the guard, timeouts, and the mistakes to avoid
+* In dev mode, Dev MCP tools and resources to apply faults to the running application, observe what it does, and turn the observation into a test
+
+Neither generates tests.
+They teach the agent the API and a method, and the agent writes the test.
+
+[#writing-tests-with-an-agent]
+== Writing Tests with an Agent
+
+An agent that has never seen the extension guesses: it puts a fault on a bean the request does not go through, an HTTP fault on a datasource, or asserts a status it never observed.
+The guide below is written for an agent with no other documentation, and covers exactly what it needs to avoid those guesses.
+
+Hand it to the agent in one of two ways:
+
+* Point it at this page, or at the file itself, `docs/modules/ROOT/examples/test-writing-guide.md` in the https://github.com/quarkiverse/quarkus-network-faults[repository^]
+* In dev mode with Dev MCP enabled, the agent reads it as the resource `quarkus-network-faults_testWritingGuide`, and the `getStatus` tool tells it to
+
+[source,markdown]
+----
+include::{examples-dir}test-writing-guide.md[]
+----
+
+== Driving the Application from an Agent
+
+=== Enabling Dev MCP
+
+Turn fault injection on in the dev profile, and enable Dev MCP:
+
+[source,properties]
+----
+%dev.quarkus.network-faults.enabled=true
+quarkus.dev-mcp.enabled=true
+----
+
+Start dev mode and point the agent's MCP client at `http://localhost:8080/q/dev-mcp`.
+
+=== Tools
+
+The tools are the methods behind the xref:dev-ui.adoc[Dev UI card].
+Over Dev MCP their names carry the prefix `quarkus-network-faults_`.
+The tools that only read, and `resetAll`, which only ever ends faults, are enabled by default.
+The tools that change the running application are opt-in: enable them in the Dev UI, under Settings, Dev MCP tab, Tools.
+
+[cols="1,1,4",options="header"]
+|===
+|Tool |Enabled |What it does
+
+|`getStatus`
+|By default
+|Whether fault injection is on, how many faults are active, every target, and a hint naming the resources to read first
+
+|`getTargets`
+|By default
+|Every target: its name, kind, configuration property, upstream, whether it is plaintext HTTP, its active fault, counters and connections
+
+|`getFaults`
+|By default
+|Every fault spec `apply` accepts, with what the application sees
+
+|`getEvents`
+|By default
+|The event log of a target, oldest first, the last 500 events
+
+|`getRequests`
+|By default
+|The HTTP requests a target saw, with response status and time, for a plaintext HTTP target
+
+|`getHistory`
+|By default
+|Every fault applied since the application started, from the card, a tool or application code, and whether traffic went through it
+
+|`getReport`
+|By default
+|A Markdown report of the targets, the fault history and the counters
+
+|`resetAll`
+|By default
+|Ends every fault on every target
+
+|`apply`
+|Opt-in
+|`apply(target, fault, requests, body, contentType)`: applies a fault to a whole target, or with `requests` such as `POST /inventory/reserve` to those requests only; `body` and `contentType` refine `responds-with`
+
+|`reset`
+|Opt-in
+|Ends every fault on one target
+
+|`dropConnections`
+|Opt-in
+|Closes the open connections of a target once
+|===
+
+=== Resources
+
+[cols="2,5",options="header"]
+|===
+|Resource |What it holds
+
+|`quarkus-network-faults_testWritingGuide`
+|The <<writing-tests-with-an-agent,test-writing guide>>
+
+|`quarkus-network-faults_agentPlaybook`
+|The <<the-playbook,playbook>>: how to run an experiment safely and turn it into a test
+
+|`quarkus-network-faults_inventory`
+|Where the application believes it is protected: every method guarded by a Fault Tolerance annotation, its effective values, and the types its class injects that a test can pass to `target(...)`
+|===
+
+=== A Typical Session
+
+. The agent calls `getStatus`, which tells it to read the guide, the playbook and the inventory.
+. It reads the inventory: `InventoryService.reserve` has `@Timeout(1000)` and a `@Fallback`, and injects `InventoryClient`.
+. It calls `getTargets` and finds `rest-client:inventory`, built from `quarkus.rest-client.inventory.url`, the config key of `InventoryClient`.
+. It states a hypothesis: when the inventory service hangs, `POST /orders` answers `503` within about a second.
+. It calls `apply` with `rest-client:inventory` and `hangs`, then calls `POST /orders` itself: `503` after 1.0 s.
+. It reads `getEvents` and `getTargets`, where the connection is listed with `held: true`, to confirm the request reached the faulted proxy.
+. It calls `reset`, then reads `getRequests`: the held request appears once the fault has ended, and `POST /orders` answers `201` again.
+. It writes the test with the guide: `faults.target(InventoryClient.class).hangs()`, `503` inside the block, `201` after it.
+. It calls `getReport` and summarises the experiment and the test for the developer.
+
+[#the-playbook]
+== The Playbook
+
+The playbook is the same for every application.
+The agent reads it before its first experiment.
+
+[source,markdown]
+----
+include::{examples-dir}agent-playbook.md[]
+----
+
+== Your Application's Promises
+
+The extension knows what the code declares: the annotations, the targets, the timeouts.
+It cannot know what the application promises when a dependency fails, which dependency may fail open, or what an experiment must not touch.
+Write those down in a `RESILIENCE.md` at the root of the project; the playbook tells the agent to read it, and to ask for it when it is missing.
+
+A template to start from:
+
+[source,markdown]
+----
+include::{examples-dir}RESILIENCE.md[]
+----
+
+== Going Further
+
+[.lead]
+* xref:dev-ui.adoc[Dev UI]
+* xref:faults.adoc[Faults Reference]
+* xref:targets.adoc[Targets Reference]
+* xref:guide-fault-tolerance.adoc[Using network faults with SmallRye Fault Tolerance]

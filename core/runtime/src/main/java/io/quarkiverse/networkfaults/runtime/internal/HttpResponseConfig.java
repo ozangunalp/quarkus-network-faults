@@ -57,4 +57,11 @@ final class HttpResponseConfig implements HttpResponse {
     public void end() {
         applied.end();
     }
+
+    /**
+     * The fault this response refines, as the tracker handed it out.
+     */
+    ActiveFault applied() {
+        return applied;
+    }
 }

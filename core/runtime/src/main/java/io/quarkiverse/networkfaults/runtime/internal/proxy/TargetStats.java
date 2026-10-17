@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +48,7 @@ final class TargetStats {
         private Map<String, List<String>> headers = Map.of();
         private String bodyFingerprint;
         private Duration responseTime;
+        private Integer responseStatus;
 
         RequestEntry(Instant time, long connectionId, HttpExchange request) {
             this.time = time;
@@ -58,7 +58,7 @@ final class TargetStats {
 
         HttpRequestRecord record() {
             return new HttpRequestRecord(time, connectionId, request.method(), request.target(), headers, bodyFingerprint,
-                    responseTime);
+                    responseTime, responseStatus);
         }
     }
 
@@ -73,8 +73,7 @@ final class TargetStats {
 
     void requestSeen(long connectionId, HttpExchange request) {
         RequestLine line = new RequestLine(request.method(), request.path());
-        Long before = requestsByPath.get(line);
-        requestsByPath.put(line, before == null ? 1 : before + 1);
+        requestsByPath.compute(line, (k, before) -> before == null ? 1 : before + 1);
         Instant now = Instant.now();
         RequestEntry entry = new RequestEntry(now, connectionId, request);
         httpRequests.add(entry);
@@ -101,12 +100,13 @@ final class TargetStats {
     }
 
     /**
-     * The response to {@code request} has started: its response time is known and nothing more will be recorded.
+     * The response to {@code request} has started: its response time and status are known and nothing more will be recorded.
      */
-    void responseSeen(HttpExchange request) {
+    void responseSeen(HttpExchange request, int status) {
         RequestEntry entry = inFlight.remove(request);
         if (entry != null) {
             entry.responseTime = Duration.between(entry.time, Instant.now());
+            entry.responseStatus = status;
         }
     }
 
@@ -114,12 +114,7 @@ final class TargetStats {
      * The connection is gone, so the requests still in flight on it will see no response.
      */
     void connectionGone(long connectionId) {
-        Iterator<RequestEntry> it = inFlight.values().iterator();
-        while (it.hasNext()) {
-            if (it.next().connectionId == connectionId) {
-                it.remove();
-            }
-        }
+        inFlight.values().removeIf(requestEntry -> requestEntry.connectionId == connectionId);
     }
 
     void bytes(Direction direction, int size) {

@@ -63,6 +63,14 @@ public final class ProxyConnection {
         return http;
     }
 
+    /**
+     * A fault answered the request in flight on this connection with {@code status} in place of the upstream, which
+     * the request's record then carries.
+     */
+    public void answeredByFault(int status) {
+        http.answeredByFault(status);
+    }
+
     boolean isClosed() {
         return closed;
     }

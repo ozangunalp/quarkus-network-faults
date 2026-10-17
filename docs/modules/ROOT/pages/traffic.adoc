@@ -68,7 +68,10 @@ Each `HttpRequestRecord` says when the request was sent, on which connection, th
 |The SHA-256 of the body as hex, or null for a request without one
 
 |`responseTime()`
-|From the request line to the status line of the response, or null when a fault answered the request or it is still in flight
+|From the request line to the status line of the response, `respondsWith` answers included, or null when the request was never answered or is still in flight
+
+|`responseStatus()`
+|The status of the response, or null when the request was never answered or is still in flight; a `respondsWith` answer carries its status
 |===
 
 == The Shape of a Retry

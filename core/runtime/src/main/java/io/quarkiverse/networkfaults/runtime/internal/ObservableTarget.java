@@ -23,4 +23,17 @@ public interface ObservableTarget extends Target {
      * Ends every active fault without going through their handles.
      */
     void reset();
+
+    /**
+     * This target as the Dev UI applies faults to it: a fault on the whole target first ends whatever fault the
+     * target has, so switching faults is one step, after the checks that could refuse the new fault have passed. A
+     * fault on some of its requests ends nothing, as through the API.
+     */
+    ObservableTarget replacing();
+
+    /**
+     * The members not reached over plaintext HTTP/1.x, as {@code name (property)}, for the reasons the Dev UI gives
+     * when it cannot show requests or apply an HTTP fault; empty when every member is.
+     */
+    List<String> opaqueMembers();
 }
