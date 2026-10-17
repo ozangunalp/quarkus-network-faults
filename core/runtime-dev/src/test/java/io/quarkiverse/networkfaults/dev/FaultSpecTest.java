@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,14 @@ class FaultSpecTest {
     }
 
     @Test
+    void parsesHeadersOnePerLine() {
+        FaultSpec.Parsed parsed = FaultSpec.parse(new FaultRequest("responds-with:429", null, null, null,
+                "Retry-After: 30\n\nX-RateLimit-Remaining:0\n"));
+        assertEquals(Map.of("Retry-After", "30", "X-RateLimit-Remaining", "0"), parsed.headers());
+        assertTrue(FaultSpec.parse(new FaultRequest("responds-with:503", null, null, null, null)).headers().isEmpty());
+    }
+
+    @Test
     void rejectsBadInput() {
         assertMessage("expected \"METHOD /path\"", new FaultRequest("hangs", "POST", null, null));
         assertMessage("expected \"METHOD /path\"", new FaultRequest("hangs", "post /x", null, null));
@@ -46,6 +55,9 @@ class FaultSpecTest {
         assertMessage("responds-with needs a status", new FaultRequest("responds-with:abc", null, null, null));
         assertMessage("only responds-with takes a body", new FaultRequest("hangs", null, "x", null));
         assertMessage("unknown fault", new FaultRequest("explodes", null, null, null));
+        assertMessage("expected a \"Name: value\" header",
+                new FaultRequest("responds-with:429", null, null, null, "Retry-After"));
+        assertMessage("only responds-with takes", new FaultRequest("hangs", null, null, null, "Retry-After: 30"));
     }
 
     @Test

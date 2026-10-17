@@ -56,7 +56,7 @@ A fault is written as the test API would call it, lower case with dashes, and an
 |`Http.afterSseEvents(3)`
 
 |`responds-with:503`
-|`http().respondsWith(503)`; the *Body* and *Content type* fields that appear with it set the body and its content type
+|`http().respondsWith(503)`; the *Body*, *Content type* and *Headers* fields that appear with it set the body, its content type and extra response headers, one `Name: value` per line, such as `Retry-After: 30`
 |===
 
 The requests field scopes the fault to xref:faults.adoc#some-requests[some requests], as `http().requests(method, path)` does: `POST /inventory/reserve` faults those requests only, and an empty field faults every connection.

@@ -23,13 +23,13 @@ class NetworkFaultsJsonRPCServiceTest {
                     "users.url");
             NetworkFaultsImpl faults = new NetworkFaultsImpl(true, List.of(), List.of());
             NetworkFaultsJsonRPCService service = new NetworkFaultsJsonRPCService(faults, new FaultHistory(faults));
-            service.apply("datasource:users", "hangs", null, null, null);
+            service.apply("datasource:users", "hangs", null, null, null, null);
             String before = faults.byName("datasource:users").currentFault();
 
             for (String fault : List.of("responds-with:503", "dies-mid-request:headers", "closes:chunks:1",
                     "hangs:sse:2")) {
                 UnsupportedOperationException e = assertThrows(UnsupportedOperationException.class,
-                        () -> service.apply("datasource:users", fault, null, null, null));
+                        () -> service.apply("datasource:users", fault, null, null, null, null));
                 assertTrue(e.getMessage().contains("plaintext HTTP/1.x"), e.getMessage());
                 assertTrue(e.getMessage().contains("datasource:users (users.url)"), e.getMessage());
                 assertEquals(before, faults.byName("datasource:users").currentFault());

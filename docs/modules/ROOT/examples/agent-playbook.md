@@ -22,13 +22,13 @@ Over Dev MCP every tool carries the prefix `quarkus-network-faults_`.
 | `quarkus-network-faults_getHistory` | by default | Every fault applied since the application started, newest first, with the guard's `verdict` |
 | `quarkus-network-faults_getReport` | by default | A Markdown report of targets, faults and counters |
 | `quarkus-network-faults_resetAll` | by default | Ends every fault on every target |
-| `quarkus-network-faults_apply` | opt-in | `apply(target, fault, requests, body, contentType)`: applies one fault |
+| `quarkus-network-faults_apply` | opt-in | `apply(target, fault, requests, body, contentType, headers)`: applies one fault |
 | `quarkus-network-faults_reset` | opt-in | Ends every fault on one target |
 | `quarkus-network-faults_dropConnections` | opt-in | Closes the open connections of a target once; no fault stays active |
 
 `target` is a name from `getTargets`, such as `rest-client:inventory`; a prefix such as `rest-client` covers every target under it.
 `fault` is a spec such as `unavailable`, `hangs`, `slow:2s`, `dies-mid-request:next-write` or `responds-with:503`.
-`requests`, `body` and `contentType` are optional and may be sent empty: `requests` is `"METHOD /path"`, such as `"POST /inventory/reserve"`, to fault only those requests; `body` and `contentType` refine `responds-with`.
+`requests`, `body`, `contentType` and `headers` are optional and may be sent empty: `requests` is `"METHOD /path"`, such as `"POST /inventory/reserve"`, to fault only those requests; `body`, `contentType` and `headers` refine `responds-with`, `headers` as one `Name: value` per line, such as `Retry-After: 30`.
 
 If `getStatus` returns `enabled: false`, fault injection is off: ask the developer to add `%dev.quarkus.network-faults.enabled=true` to `application.properties`.
 
