@@ -1,6 +1,8 @@
 # Quarkus Network Faults
 
 [![Version](https://img.shields.io/maven-central/v/io.quarkiverse.networkfaults/quarkus-network-faults?logo=apache-maven&style=flat-square)](https://central.sonatype.com/artifact/io.quarkiverse.networkfaults/quarkus-network-faults)
+[![Documentation](https://img.shields.io/badge/docs-quarkiverse-4695EB?logo=quarkus&style=flat-square)](https://docs.quarkiverse.io/quarkus-network-faults/dev/index.html)
+[![Quarkus](https://img.shields.io/badge/Quarkus-4.0.0.Beta1%2B-4695EB?logo=quarkus&style=flat-square)](https://quarkus.io/)
 
 **Make a dependency fail on purpose, inside your `@QuarkusTest`.**
 
@@ -170,6 +172,64 @@ it, from what it read and what it observed. See
   can strike the first n requests, every nth, or one method of a client, deterministically.
 - **Consequences are undone.** When a fault ends, and after every test, Agroal pools are
   flushed and SmallRye Fault Tolerance circuit breakers are reset.
+
+## How it compares
+
+Other tools make dependencies fail too; they do it at a different place, and that decides what
+a test can prove.
+
+| | Where the fault happens | What it can produce | Writing a test | When a test is wrong | Dev UI and agents |
+|---|---|---|---|---|---|
+| **Quarkus Network Faults** | On the wire, in a proxy inside the test JVM, between the real client library and the real dependency | Refused and dropped connections, hangs, latency, resets and clean closes at a chosen moment of the response, synthetic HTTP statuses, on all or some requests; the client's timeouts, retries and breakers react as in production | **You write the test, nothing else.** One test dependency; URLs are rewritten to the proxies for you; the dependency is the bean you inject; a fault is one statement in a try-with-resources; deterministic with `forFirst`, `every`, `after`; faults ended, pools flushed and breakers reset after each test | **The test tells you.** A fault no request went through fails the test and names the configuration property to check; a second fault on a busy target, or an HTTP fault on a datasource, is refused with a message saying what to do instead | A card that applies every fault, shows each target's requests and the verdict on its last fault, and exports a report; Dev MCP tools, a test-writing guide, a playbook and an inventory of the guarded methods, so an agent can experiment and then write the tests |
+| [Quarkus Goblin](https://github.com/quarkiverse/quarkus-goblin) | Inside the application, in JAX-RS filters, CDI interceptors and an Agroal hook | Latency, exceptions and HTTP statuses thrown from Java code on the application's own endpoints, beans and connection acquisition; rewritten response bodies and headers | **Made for clicking, not for tests.** Chaos is switched on through configuration or `AssaultEngine.setActive(true)` and acts globally, by package, annotation and a percentage of requests, so deterministic at 100 percent only | **Silence.** An assault that never fired leaves the test green; the history shows it, the test does not | The richest dashboard of the four: profiles, history, a Markdown report, metrics and traces; Dev MCP tools, a playbook and an inventory for an agent that runs experiments, with no test API to write them down in |
+| [Toxiproxy](https://github.com/Shopify/toxiproxy) via [Testcontainers](https://java.testcontainers.org/modules/toxiproxy/) | On the wire, in a container between the application and a dependency that is also reachable from that container | Latency, bandwidth, slow close, timeout, reset and data limits on a TCP stream, for any language | **The plumbing is yours.** Docker on every machine and runner; a test resource that starts a network, the dependency on it and the proxy container; a client for the API; the application's client reconfigured to a mapped port; a toxic created and removed around each test; no per-request selection | **Silence.** A toxic on a proxy nothing talks to is invisible, and a pooled connection opened before it keeps working | A CLI and an HTTP API against the container; nothing in the Quarkus Dev UI, nothing for an agent |
+| [WireMock](https://wiremock.org/) | In place of the dependency: a stub server answers instead of it | Scripted HTTP responses, delays, connection resets and malformed bodies | **A stub per call.** A stub server from a test resource or the `quarkus-wiremock` Dev Service, the client reconfigured to its URL, and a stub for every request the test makes, so the real dependency is never exercised | **If you ask.** An unstubbed request gets a 404, and `verify(...)` checks a call was made, when the test includes it | An admin API, and a Dev Service that starts the server; nothing for an agent |
+
+The same hang, written with Toxiproxy, has to build its own world before the test can say what
+it is about: a network, the dependency on it, the proxy container, a proxy over the API, the
+client's URL pointed at a mapped port, and the toxic added and removed by hand.
+
+```java
+ToxiproxyContainer toxiproxy = new ToxiproxyContainer("ghcr.io/shopify/toxiproxy:2.11.0").withNetwork(network);
+ToxiproxyClient client = new ToxiproxyClient(toxiproxy.getHost(), toxiproxy.getControlPort());
+Proxy inventory = client.createProxy("inventory", "0.0.0.0:8666", "inventory:8080");
+config.put("quarkus.rest-client.inventory.url", "http://" + toxiproxy.getHost() + ":" + toxiproxy.getMappedPort(8666));
+
+inventory.toxics().timeout("hang", ToxicDirection.DOWNSTREAM, 0);
+try {
+    when().post("/orders").then().statusCode(503);
+} finally {
+    inventory.toxics().get("hang").remove();
+}
+```
+
+The difference is not the line count. Toxiproxy and WireMock are general tools that know nothing
+about the application in front of them, so everything that connects them to it is yours to write
+and to keep right. This extension is part of the Quarkus application, and that is what makes it
+the natural fit for building a resilient one:
+
+- **It knows the configuration.** Every REST Client, datasource, Redis, MongoDB, Kafka or
+  LangChain4j connection the application configures is a target, Dev Services included, with
+  nothing to point anywhere.
+- **It knows the beans.** A test names a dependency the way the application does, by the
+  type it injects, so the test reads like the code it verifies.
+- **It knows the resilience layer.** Pools are flushed and SmallRye Fault Tolerance circuit
+  breakers are reset when a fault ends, so every test starts clean and the recovery can be
+  asserted in the same method.
+- **It knows what the fault should have met.** A fault no request went through fails the test
+  and names the configuration property to look at, so a wrong target is a red test, not a green
+  one that proved nothing.
+- **It knows the protocol.** On plaintext HTTP it can fail one request in n, answer with a
+  chosen status, cut a stream after the third event and count every attempt a retry made.
+- **It lives in dev mode too.** The same faults from the Dev UI card, the same verdict, and
+  Dev MCP tools with a test-writing guide, so an agent can experiment against the running
+  application and write the test that pins what it saw.
+
+Goblin is a Quarkus extension as well, and a good one for exploring, but it faults the
+application's own code with exceptions thrown from inside it. A dependency does not fail that
+way: it refuses, hangs, slows down or stops answering half-way, and the client library's own
+timeouts and retries decide what the application sees. That is what this extension produces,
+and what a resilient application has to be tested against.
 
 ## What it covers
 
