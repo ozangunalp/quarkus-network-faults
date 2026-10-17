@@ -34,7 +34,7 @@ public final class ProxyRegistry {
     /**
      * How many events, and how many HTTP requests, a target remembers; older ones are dropped.
      */
-    private static final int DEFAULT_EVENT_CAPACITY = 500;
+    public static final int DEFAULT_EVENT_CAPACITY = 500;
     /**
      * How long the proxy tries to reach an upstream before it gives up and resets the application's connection.
      * The application is connected to the proxy by then, so without a bound it would wait out its read timeout on

@@ -21,6 +21,7 @@
 * xref:guard.adoc[The Guard]
 * xref:timeouts.adoc[Client Timeout Defaults]
 * xref:dev-ui.adoc[Dev UI]
+* xref:agents.adoc[AI Agents]
 
 [.list-top-item]
 .Development

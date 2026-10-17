@@ -24,6 +24,10 @@ final class HttpResponseFramer extends HttpFramer {
         this.conversation = conversation;
     }
 
+    int status() {
+        return status;
+    }
+
     /**
      * {@code HTTP/1.x status reason}
      */

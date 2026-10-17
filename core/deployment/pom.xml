@@ -45,6 +45,23 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!--
+              The guide and the playbook are served as Dev MCP resources and included in the docs. They live under
+              docs, where Antora resolves includes, and are copied into this jar from there, so the two never differ.
+            -->
+            <resource>
+                <directory>../../docs/modules/ROOT/examples</directory>
+                <includes>
+                    <include>test-writing-guide.md</include>
+                    <include>agent-playbook.md</include>
+                </includes>
+                <targetPath>network-faults</targetPath>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>

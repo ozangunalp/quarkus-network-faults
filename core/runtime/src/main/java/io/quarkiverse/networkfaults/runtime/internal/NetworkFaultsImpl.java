@@ -15,6 +15,7 @@ import java.util.TreeSet;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.spi.Bean;
 
+import io.quarkiverse.networkfaults.ActiveFault;
 import io.quarkiverse.networkfaults.Endpoint;
 import io.quarkiverse.networkfaults.MethodReference;
 import io.quarkiverse.networkfaults.NetworkFaults;
@@ -207,6 +208,31 @@ public final class NetworkFaultsImpl implements NetworkFaults {
     @Override
     public void resetAll() {
         tracker.endAll();
+    }
+
+    /**
+     * The record of a fault this instance handed out, as its listeners were told of it: the handle itself, or, for
+     * {@code respondsWith}, the response that wraps it. Null for a handle that is not one of ours. Not part of the
+     * API: the Dev UI uses it to mark what it applied.
+     */
+    public FaultRecord recordOf(ActiveFault handed) {
+        ActiveFault fault = handed instanceof HttpResponseConfig response ? response.applied() : handed;
+        return fault instanceof FaultTracker.Group group ? group.record() : null;
+    }
+
+    /**
+     * Tells {@code listener} of every fault handed out that starts or ends from now on. Not part of the API: the
+     * Dev UI uses it.
+     */
+    public void addFaultListener(FaultListener listener) {
+        tracker.addListener(listener);
+    }
+
+    /**
+     * How many faults handed out are active right now. Not part of the API: the Dev UI uses it.
+     */
+    public int activeFaultCount() {
+        return tracker.activeCount();
     }
 
     /**

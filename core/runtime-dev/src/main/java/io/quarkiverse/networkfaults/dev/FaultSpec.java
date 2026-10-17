@@ -1,67 +1,188 @@
 package io.quarkiverse.networkfaults.dev;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 import io.quarkiverse.networkfaults.ActiveFault;
+import io.quarkiverse.networkfaults.Endpoint;
+import io.quarkiverse.networkfaults.HttpResponse;
 import io.quarkiverse.networkfaults.Moment;
 import io.quarkiverse.networkfaults.Target;
+import io.quarkiverse.networkfaults.runtime.internal.proxy.fault.ResponseCursor;
 import io.quarkus.runtime.configuration.DurationConverter;
 
 /**
  * Textual form of a fault, as the Dev UI sends it: {@code unavailable}, {@code connect-timeout}, {@code hangs},
  * {@code slow:<duration>}, {@code dies-mid-request}, {@code closes}, and {@code dies-mid-request:<moment>},
  * {@code closes:<moment>} or {@code hangs:<moment>} where the moment is {@code <bytes>}, {@code next-write}, {@code headers},
- * {@code chunks:<n>} or {@code sse:<n>}.
+ * {@code chunks:<n>} or {@code sse:<n>}. {@code responds-with:<status>} answers every request with that status. Every
+ * fault but {@code unavailable} and {@code connect-timeout} may be scoped to {@code METHOD /path} requests.
  */
 final class FaultSpec {
 
     /**
-     * Every accepted form, with a sample argument where one is needed.
+     * What a fault, parsed from a {@link FaultRequest}, consists of. Fields that do not apply to the kind are null.
      */
-    static final List<String> EXAMPLES = List.of("unavailable", "connect-timeout", "hangs", "slow:10s",
-            "dies-mid-request", "dies-mid-request:512", "dies-mid-request:next-write", "dies-mid-request:headers",
-            "dies-mid-request:chunks:2", "dies-mid-request:sse:3", "hangs:sse:3", "closes", "closes:sse:1");
+    record Parsed(String kind, String scopeMethod, String scopePath, Moment moment, Duration duration, Integer status,
+            String body, String contentType) {
+
+        /**
+         * Whether the fault reads the HTTP exchange, so needs a target reached over plaintext HTTP, as the API decides
+         * it.
+         */
+        boolean readsHttp() {
+            return status != null || (moment != null && ResponseCursor.readsHttp(moment));
+        }
+    }
+
+    /**
+     * An accepted form of {@link FaultRequest#spec()}, what it does, whether it needs a plaintext HTTP target and
+     * whether it is a {@code responds-with}, which takes a body and a content type. What {@code getFaults} returns.
+     */
+    public record Example(String spec, String meaning, boolean readsHttp, boolean respondsWith) {
+    }
 
     private FaultSpec() {
     }
 
     /**
-     * Applies the fault {@code spec} names to {@code target}.
-     *
-     * @throws IllegalArgumentException if {@code spec} is not one of the accepted forms
+     * Every accepted form, with a sample argument where one is needed.
      */
-    static ActiveFault apply(String spec, Target target) {
+    static List<Example> examples() {
+        return List.of(
+                example("unavailable", "connections are refused"),
+                example("connect-timeout", "connecting never completes"),
+                example("hangs", "the connection is accepted but nothing is ever answered"),
+                example("slow:10s", "every byte is delayed, so the call takes that long"),
+                example("dies-mid-request", "the connection is reset while the request is in flight"),
+                example("dies-mid-request:512", "the connection is reset after 512 bytes"),
+                example("dies-mid-request:next-write", "the connection is reset on the next write"),
+                example("dies-mid-request:headers", "the connection is reset after the response headers"),
+                example("dies-mid-request:chunks:2", "the connection is reset after 2 response chunks"),
+                example("dies-mid-request:sse:3", "the connection is reset after 3 server-sent events"),
+                example("hangs:sse:3", "the response stalls after 3 server-sent events"),
+                example("closes", "the connection is closed cleanly"),
+                example("closes:sse:1", "the connection is closed cleanly after 1 server-sent event"),
+                example("responds-with:503",
+                        "every request is answered with that status instead of reaching the upstream"));
+    }
+
+    private static Example example(String spec, String meaning) {
+        Parsed parsed = parse(new FaultRequest(spec, null, null, null));
+        return new Example(spec, meaning, parsed.readsHttp(), parsed.status() != null);
+    }
+
+    /**
+     * Parses the fault {@code request} names.
+     *
+     * @throws IllegalArgumentException if {@code request} is not one of the accepted forms
+     */
+    static Parsed parse(FaultRequest request) {
+        String spec = request.spec();
         String s = spec.trim().toLowerCase(Locale.ROOT);
         int colon = s.indexOf(':');
         String kind = colon < 0 ? s : s.substring(0, colon);
         String arg = colon < 0 ? null : s.substring(colon + 1).trim();
+        String scopeMethod = null;
+        String scopePath = null;
+        if (request.requests() != null) {
+            String scope = request.requests().trim();
+            int space = scope.indexOf(' ');
+            scopeMethod = space < 0 ? "" : scope.substring(0, space);
+            scopePath = space < 0 ? "" : scope.substring(space + 1).trim();
+            if (!scopeMethod.matches("[A-Z]+") || scopePath.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "expected \"METHOD /path\", for example \"POST /inventory/reserve\": " + request.requests());
+            }
+        }
+        if (!kind.equals("responds-with") && (request.body() != null || request.contentType() != null)) {
+            throw new IllegalArgumentException("only responds-with takes a body or a content type: " + spec);
+        }
+        Moment moment = null;
+        Duration duration = null;
+        Integer status = null;
         switch (kind) {
             case "unavailable", "connect-timeout" -> {
                 if (arg != null) {
                     throw new IllegalArgumentException("fault '" + kind + "' takes no argument: " + spec);
                 }
-                return kind.equals("unavailable") ? target.unavailable() : target.connectTimeout();
+                if (scopeMethod != null) {
+                    throw new IllegalArgumentException("fault '" + kind + "' takes no request scope: " + request.requests());
+                }
             }
-            case "hangs" -> {
-                return arg == null ? target.hangs() : target.hangs(parseMoment(arg, spec));
-            }
-            case "dies-mid-request" -> {
-                return arg == null ? target.diesMidRequest() : target.diesMidRequest(parseMoment(arg, spec));
-            }
-            case "closes" -> {
-                return arg == null ? target.closes() : target.closes(parseMoment(arg, spec));
+            case "hangs", "dies-mid-request", "closes" -> {
+                if (arg != null) {
+                    moment = parseMoment(arg, spec);
+                }
             }
             case "slow" -> {
                 if (arg == null) {
                     throw new IllegalArgumentException("slow needs a duration, for example slow:10s: " + spec);
                 }
-                return target.slow(parseDuration(arg));
+                duration = parseDuration(arg);
+            }
+            case "responds-with" -> {
+                try {
+                    status = Integer.valueOf(arg);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException(
+                            "responds-with needs a status, for example responds-with:503: " + spec, e);
+                }
             }
             default -> throw new IllegalArgumentException("unknown fault '" + kind + "' in '" + spec
-                    + "'; expected one of " + EXAMPLES);
+                    + "'; expected one of " + examplesSpecs());
         }
+        return new Parsed(kind, scopeMethod, scopePath, moment, duration, status, request.body(), request.contentType());
+    }
+
+    /**
+     * Applies {@code parsed} to {@code target}, or to the requests it is scoped to.
+     */
+    static ActiveFault apply(Parsed parsed, Target target) {
+        Endpoint endpoint = target;
+        if (parsed.scopeMethod() != null) {
+            endpoint = target.http().requests(parsed.scopeMethod(), parsed.scopePath());
+        }
+        switch (parsed.kind()) {
+            case "unavailable" -> {
+                return target.unavailable();
+            }
+            case "connect-timeout" -> {
+                return target.connectTimeout();
+            }
+            case "hangs" -> {
+                return parsed.moment() == null ? endpoint.hangs() : endpoint.hangs(parsed.moment());
+            }
+            case "dies-mid-request" -> {
+                return parsed.moment() == null ? endpoint.diesMidRequest() : endpoint.diesMidRequest(parsed.moment());
+            }
+            case "closes" -> {
+                return parsed.moment() == null ? endpoint.closes() : endpoint.closes(parsed.moment());
+            }
+            case "slow" -> {
+                return endpoint.slow(parsed.duration());
+            }
+            default -> {
+                HttpResponse response = endpoint.http().respondsWith(parsed.status());
+                if (parsed.contentType() != null) {
+                    response.contentType(parsed.contentType());
+                }
+                if (parsed.body() != null) {
+                    response.body(parsed.body());
+                }
+                return response;
+            }
+        }
+    }
+
+    private static List<String> examplesSpecs() {
+        List<String> specs = new ArrayList<>();
+        for (Example example : examples()) {
+            specs.add(example.spec());
+        }
+        return specs;
     }
 
     /**

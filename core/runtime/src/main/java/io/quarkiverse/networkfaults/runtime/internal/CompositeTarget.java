@@ -36,8 +36,17 @@ final class CompositeTarget extends CompositeEndpoint implements ObservableTarge
     private final String name;
 
     CompositeTarget(String name, List<ProxyTarget> members, FaultTracker tracker) {
-        super(members, tracker, RequestScope.ALL);
+        this(name, members, tracker, false);
+    }
+
+    private CompositeTarget(String name, List<ProxyTarget> members, FaultTracker tracker, boolean replacing) {
+        super(members, tracker, RequestScope.ALL, replacing);
         this.name = name;
+    }
+
+    @Override
+    public ObservableTarget replacing() {
+        return new CompositeTarget(name, members, tracker, true);
     }
 
     @Override
@@ -161,9 +170,7 @@ final class CompositeTarget extends CompositeEndpoint implements ObservableTarge
 
     @Override
     public void reset() {
-        for (ProxyTarget t : members) {
-            t.reset();
-        }
+        tracker.endOn(members);
     }
 
     @Override

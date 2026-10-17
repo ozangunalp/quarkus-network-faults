@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.StringJoiner;
 
 import io.quarkiverse.networkfaults.ActiveFault;
 import io.quarkiverse.networkfaults.Advanced;
@@ -44,11 +43,14 @@ class CompositeEndpoint implements Endpoint {
     final List<ProxyTarget> members;
     final FaultTracker tracker;
     private final RequestScope scope;
+    // whether a fault on the whole target first ends the faults the members have, see ObservableTarget#replacing
+    final boolean replacing;
 
-    CompositeEndpoint(List<ProxyTarget> members, FaultTracker tracker, RequestScope scope) {
+    CompositeEndpoint(List<ProxyTarget> members, FaultTracker tracker, RequestScope scope, boolean replacing) {
         this.members = List.copyOf(members);
         this.tracker = tracker;
         this.scope = scope;
+        this.replacing = replacing;
     }
 
     /**
@@ -58,6 +60,9 @@ class CompositeEndpoint implements Endpoint {
     ActiveFault apply(Fault fault) {
         if (!scope.isAll() || fault.readsHttp()) {
             requireHttp(fault);
+        }
+        if (replacing && scope.isAll()) {
+            tracker.endOn(members);
         }
         for (ProxyTarget t : members) {
             t.requireCanApply(scope);
@@ -76,18 +81,26 @@ class CompositeEndpoint implements Endpoint {
      * that is not plaintext HTTP.
      */
     private void requireHttp(Fault fault) {
-        StringJoiner others = new StringJoiner(", ");
+        List<String> others = opaqueMembers();
+        if (!others.isEmpty()) {
+            throw new UnsupportedOperationException("The '" + scope.describe(fault) + "' fault acts on the HTTP exchange, "
+                    + "so it needs a target reached over plaintext HTTP/1.x, an http:// or ws:// address. Not one: "
+                    + String.join(", ", others) + ". There, use a fault on the whole target that works on any "
+                    + "protocol, such as diesMidRequest(afterBytes(n)), hangs() or unavailable().");
+        }
+    }
+
+    /**
+     * The members not reached over plaintext HTTP/1.x, as {@code name (property)}.
+     */
+    public List<String> opaqueMembers() {
+        List<String> others = new ArrayList<>();
         for (ProxyTarget t : members) {
             if (!t.upstream().http()) {
                 others.add(t.name() + " (" + t.sourceProperty() + ")");
             }
         }
-        if (others.length() > 0) {
-            throw new UnsupportedOperationException("The '" + scope.describe(fault) + "' fault acts on the HTTP exchange, "
-                    + "so it needs a target reached over plaintext HTTP/1.x, an http:// or ws:// address. Not one: "
-                    + others + ". There, use a fault on the whole target that works on any protocol, such as "
-                    + "diesMidRequest(afterBytes(n)), hangs() or unavailable().");
-        }
+        return others;
     }
 
     @Override
@@ -127,22 +140,22 @@ class CompositeEndpoint implements Endpoint {
 
             @Override
             public Endpoint forFirst(int n) {
-                return new CompositeEndpoint(members, tracker, scope.first(n));
+                return new CompositeEndpoint(members, tracker, scope.first(n), replacing);
             }
 
             @Override
             public Endpoint every(int n) {
-                return new CompositeEndpoint(members, tracker, scope.every(n));
+                return new CompositeEndpoint(members, tracker, scope.every(n), replacing);
             }
 
             @Override
             public Endpoint after(int n) {
-                return new CompositeEndpoint(members, tracker, scope.after(n));
+                return new CompositeEndpoint(members, tracker, scope.after(n), replacing);
             }
 
             @Override
             public Endpoint requests(String method, String path) {
-                return new CompositeEndpoint(members, tracker, scope.and(method, path));
+                return new CompositeEndpoint(members, tracker, scope.and(method, path), replacing);
             }
         };
     }

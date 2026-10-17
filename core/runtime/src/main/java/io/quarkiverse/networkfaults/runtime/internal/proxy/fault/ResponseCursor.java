@@ -11,7 +11,7 @@ import io.vertx.core.buffer.Buffer;
  * order they arrive. A byte count is counted here, whatever the protocol; the other positions are places in an
  * HTTP response, which arrive as the marks of each buffer.
  */
-abstract class ResponseCursor {
+public abstract class ResponseCursor {
 
     /**
      * A cursor for {@code when}, which must not be {@link Moment.OnNextWrite}.
@@ -29,7 +29,7 @@ abstract class ResponseCursor {
     /**
      * Whether the position is a place in an HTTP response, which only a plaintext HTTP target has.
      */
-    static boolean readsHttp(Moment when) {
+    public static boolean readsHttp(Moment when) {
         return switch (when) {
             case Moment.AfterBytes bytes -> false;
             case Moment.OnNextWrite write -> false;

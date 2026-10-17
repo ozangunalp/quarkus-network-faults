@@ -14,6 +14,7 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -424,6 +425,18 @@ class ProxyCoreTest {
     }
 
     @Test
+    void requestRecordCarriesTheStatusRespondsWithAnsweredWith() throws Exception {
+        try (Socket s = connect(); ActiveFault f = api(target).http().respondsWith(503)) {
+            s.getOutputStream().write(ascii("GET /a HTTP/1.1\r\nHost: h\r\n\r\n"));
+            s.getOutputStream().flush();
+            s.getInputStream().readAllBytes();
+        }
+        HttpRequestRecord record = target.httpRequests(RequestScope.ALL).getFirst();
+        assertEquals(503, record.responseStatus());
+        assertNotNull(record.responseTime());
+    }
+
+    @Test
     void respondsWithCarriesABodyContentTypeAndHeaders() throws Exception {
         String body = "{\"error\":\"rate limited\"}";
         try (Socket s = connect();
@@ -609,6 +622,22 @@ class ProxyCoreTest {
             lines.add(r.method() + " " + r.target());
         }
         assertEquals(List.of("GET /a?x=1", "GET /a?x=1", "POST /b", "POST /b"), lines);
+    }
+
+    @Test
+    void requestRecordCarriesTheResponseStatus() throws Exception {
+        try (TestUpstream upstream = TestUpstream.answering(ascii("HTTP/1.1 204 No Content\r\n\r\n"))) {
+            ProxyTarget proxy = registry.targetFor(TargetName.of("no-content"), Upstream.http("127.0.0.1", upstream.port()),
+                    "test.no-content.url");
+            try (Socket s = Sockets.connect(proxy)) {
+                s.getOutputStream().write(ascii("DELETE /a HTTP/1.1\r\nHost: h\r\n\r\n"));
+                s.getOutputStream().flush();
+                readHead(s.getInputStream());
+            }
+            HttpRequestRecord record = proxy.httpRequests(RequestScope.ALL).getFirst();
+            assertEquals(204, record.responseStatus());
+            assertNotNull(record.responseTime());
+        }
     }
 
     @Test

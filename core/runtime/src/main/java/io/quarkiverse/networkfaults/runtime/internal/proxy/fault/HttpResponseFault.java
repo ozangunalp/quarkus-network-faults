@@ -132,6 +132,9 @@ public final class HttpResponseFault implements Fault {
             return; // wait for the rest of the headers
         }
         pending.request = null;
+        // before the response is written: the write can complete, and close the connection, before forward returns,
+        // and a closed connection forgets the requests still in flight on it
+        connection.answeredByFault(status);
         if (bodyLength < 0) {
             connection.toClient().forward(render(), connection::closeAfterResponse);
             return;
