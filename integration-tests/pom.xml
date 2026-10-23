@@ -23,6 +23,7 @@
         <module>data-hibernate</module>
         <module>hibernate-reactive</module>
         <module>mongodb</module>
+        <module>mailer</module>
     </modules>
 
     <dependencies>

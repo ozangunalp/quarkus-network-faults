@@ -244,6 +244,7 @@ addresses one by the bean the application injects.
 | REST Client | `target(InventoryClient.class)`, the interface; `target(InventoryClient::reserve)` for one method's requests |
 | Redis | `target(RedisDataSource.class)`, or the Vert.x clients; standalone mode |
 | MongoDB | `target(MongoClient.class)` or the reactive client; standalone servers |
+| Mailer | `target(Mailer.class)`, a named one with its `@MailerName` literal; with `quarkus.mailer.mock=false` |
 | SmallRye GraphQL client | the typesafe interface, or a dynamic client by name |
 | gRPC client | `target(Greeter.class, GrpcClient.Literal.of("greeter"))` |
 | Kafka | the emitter or client bean; bootstrap connection only, see below |

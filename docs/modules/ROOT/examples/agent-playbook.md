@@ -2,7 +2,7 @@
 
 ## What this is
 
-Quarkus Network Faults puts a proxy in front of every outbound connection of the application: REST Clients, datasources, Redis, MongoDB, GraphQL and gRPC clients, Quarkus LangChain4j models and MCP servers.
+Quarkus Network Faults puts a proxy in front of every outbound connection of the application: REST Clients, datasources, Redis, MongoDB, mailers, GraphQL and gRPC clients, Quarkus LangChain4j models and MCP servers.
 In dev mode, the Dev MCP tools below apply faults to those proxies in the running application, so you can make a dependency fail on purpose and watch what the application does.
 
 An experiment finds out what the application really does when one dependency fails in one way.

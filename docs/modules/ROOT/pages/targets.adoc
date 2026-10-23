@@ -58,6 +58,9 @@ Pass the type and the qualifiers the application would inject:
 |MongoDB client
 |`faults.target(MongoClient.class)`, with `+MongoClientName.Literal.of(...)+` for a named one
 
+|Mailer
+|`faults.target(Mailer.class)` for the default one, `faults.target(Mailer.class, MailerName.Literal.of("alerts"))` for a named one
+
 |GraphQL client
 |`faults.target(LuckyClient.class)` for a typesafe client
 
@@ -131,6 +134,9 @@ NOTE: A registry name such as `datasource:<default>:jdbc` cannot be used to sele
 |`quarkus.mongodb[.<name>].connection-string`, `quarkus.mongodb[.<name>].hosts`
 |`mongodb:<name>`, `+#2+` and up for further servers of one client
 
+|`quarkus.mailer[.<name>].host`, `.port`
+|`mailer:<name>`; `mailer` is every mailer
+
 |`quarkus.smallrye-graphql-client.<key>.url`, or `+@GraphQLClientApi(endpoint = ...)+`
 |`graphql-client:<configKey or simple class name>` for a typesafe client, `graphql-client:<name>` for a dynamic one, `graphql-client:default` for a dynamic one without `@GraphQLClient`
 
@@ -190,6 +196,15 @@ The connection string is rewritten server by server, credentials, database and o
 TIP: The defaults of the driver wait thirty seconds to select a server, so set `quarkus.mongodb.server-selection-timeout` and `read-timeout` to what the test should tolerate; the sample sets two seconds.
 
 WARNING: A replica set advertises its members and the driver connects to them directly, which bypasses the proxy as Kafka does. A standalone server is fully proxied.
+
+== Mailer
+
+`faults.target(Mailer.class)` is the default mailer and `MailerName.Literal.of("alerts")` selects a named one; `ReactiveMailer` and the Vert.x `MailClient` beans resolve the same way.
+
+A mailer's `host` and `port` share one proxy; a mailer without a `port` is proxied to port 25, which is what Vert.x connects to.
+A hung SMTP server is bounded by `quarkus.mailer.timeout` for the blocking `Mailer`, sixty seconds by default; the sample sets two.
+
+IMPORTANT: In tests a mailer is a mock by default and sends nothing, so there is nothing to fault. Set `quarkus.mailer.mock=false`, or `quarkus.mailer.<name>.mock=false`, and point the mailer at an SMTP server the test starts.
 
 == GraphQL Client
 
