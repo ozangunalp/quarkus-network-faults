@@ -85,6 +85,9 @@ Other clients have defaults of their own:
 |MongoDB
 |`quarkus.mongodb.server-selection-timeout`, thirty seconds by default, and `read-timeout`
 
+|Mailer
+|`quarkus.mailer.timeout` for the blocking `Mailer`, sixty seconds by default
+
 |GraphQL client
 |Nothing: the client has no timeout of its own
 

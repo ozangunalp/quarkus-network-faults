@@ -27,6 +27,7 @@
         <module>data-hibernate</module>
         <module>hibernate-orm</module>
         <module>mongodb</module>
+        <module>mailer</module>
     </modules>
 
     <build>

@@ -1,0 +1,10 @@
+name: Network Faults - Mailer
+description: Network fault targets for the Mailer; included automatically next to quarkus-network-faults when quarkus-mailer is present
+metadata:
+  keywords:
+    - testing
+    - fault-injection
+  categories:
+    - "miscellaneous"
+  status: "experimental"
+  unlisted: true

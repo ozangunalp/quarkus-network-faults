@@ -56,7 +56,7 @@ final class ResilienceInventory {
     private static final Set<String> TARGET_BEAN_TYPES = Set.of("DataSource", "Pool", "RedisDataSource",
             "ReactiveRedisDataSource", "MongoClient", "ReactiveMongoClient", "EntityManager", "SessionFactory",
             "ChatModel", "StreamingChatModel", "EmbeddingModel", "ChatMemoryStore", "EmbeddingStore", "McpClient",
-            "KafkaClientService", "Emitter", "MutinyEmitter");
+            "KafkaClientService", "Emitter", "MutinyEmitter", "Mailer", "ReactiveMailer");
 
     private ResilienceInventory() {
     }

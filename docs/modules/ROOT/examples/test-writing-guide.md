@@ -1,6 +1,6 @@
 # Writing tests with Quarkus Network Faults
 
-Quarkus Network Faults puts an in-process proxy in front of every outbound connection the application's configuration describes: REST Clients, datasources, Redis, MongoDB, GraphQL and gRPC clients, Quarkus LangChain4j models, stores and MCP servers.
+Quarkus Network Faults puts an in-process proxy in front of every outbound connection the application's configuration describes: REST Clients, datasources, Redis, MongoDB, mailers, GraphQL and gRPC clients, Quarkus LangChain4j models, stores and MCP servers.
 A `@QuarkusTest` applies a fault to one of those proxies and asserts what the application does while the dependency fails, and after it recovers.
 This guide is everything you need to write such a test.
 Read it in order the first time.
@@ -84,6 +84,7 @@ The first column is the name `getTargets` shows and the configuration property i
 | `datasource:<name>:reactive`, `quarkus.datasource[.<name>].reactive.url` | `faults.target(Pool.class)`, or `Mutiny.SessionFactory.class` |
 | `redis:<name>`, `quarkus.redis[.<name>].hosts` | `faults.target(RedisDataSource.class)`, with `RedisClientName.Literal.of("<name>")` for a named one |
 | `mongodb:<name>`, `quarkus.mongodb[.<name>].connection-string` or `.hosts` | `faults.target(MongoClient.class)`, with `MongoClientName.Literal.of("<name>")` for a named one |
+| `mailer:<name>`, `quarkus.mailer[.<name>].host` / `.port` | `faults.target(Mailer.class)`, with `MailerName.Literal.of("<name>")` for a named one; the mailer needs `mock=false`, or it sends nothing in tests |
 | `graphql-client:<key>`, `quarkus.smallrye-graphql-client.<key>.url` | `faults.target(LuckyClient.class)`: the typesafe client interface |
 | `grpc-client:<name>`, `quarkus.grpc.clients.<name>.host` / `.port` / `.test-port` | `faults.target(Greeter.class, GrpcClient.Literal.of("<name>"))`; the client needs `test-port` set, or it is not proxied in tests |
 | `langchain4j:<provider>:<name>`, `quarkus.langchain4j.<provider>[.<name>].base-url` | `faults.target(ChatModel.class, ModelName.Literal.of("<name>"))`, or the AI service interface that uses the model |
